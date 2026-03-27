@@ -135,15 +135,15 @@ func GetRequestAction(b []byte) string {
 	return string(m[1])
 }
 
-func GetCapabilitiesResponse(host string) []byte {
+func GetCapabilitiesResponse(host, stream string) []byte {
 	e := NewEnvelope()
 	e.Appendf(`<tds:GetCapabilitiesResponse>
 	<tds:Capabilities>
 		<tt:Device>
-			<tt:XAddr>http://%s/onvif/device_service</tt:XAddr>
+			<tt:XAddr>http://%s/onvif/%s/device_service</tt:XAddr>
 		</tt:Device>
 		<tt:Media>
-			<tt:XAddr>http://%s/onvif/media_service</tt:XAddr>
+			<tt:XAddr>http://%s/onvif/%s/media_service</tt:XAddr>
 			<tt:StreamingCapabilities>
 				<tt:RTPMulticast>false</tt:RTPMulticast>
 				<tt:RTP_TCP>false</tt:RTP_TCP>
@@ -151,24 +151,24 @@ func GetCapabilitiesResponse(host string) []byte {
 			</tt:StreamingCapabilities>
 		</tt:Media>
 	</tds:Capabilities>
-</tds:GetCapabilitiesResponse>`, host, host)
+</tds:GetCapabilitiesResponse>`, host, stream, host, stream)
 	return e.Bytes()
 }
 
-func GetServicesResponse(host string) []byte {
+func GetServicesResponse(host, stream string) []byte {
 	e := NewEnvelope()
 	e.Appendf(`<tds:GetServicesResponse>
 	<tds:Service>
 		<tds:Namespace>http://www.onvif.org/ver10/device/wsdl</tds:Namespace>
-		<tds:XAddr>http://%s/onvif/device_service</tds:XAddr>
+		<tds:XAddr>http://%s/onvif/%s/device_service</tds:XAddr>
 		<tds:Version><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tds:Version>
 	</tds:Service>
 	<tds:Service>
 		<tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>
-		<tds:XAddr>http://%s/onvif/media_service</tds:XAddr>
+		<tds:XAddr>http://%s/onvif/%s/media_service</tds:XAddr>
 		<tds:Version><tt:Major>2</tt:Major><tt:Minor>5</tt:Minor></tds:Version>
 	</tds:Service>
-</tds:GetServicesResponse>`, host, host)
+</tds:GetServicesResponse>`, host, stream, host, stream)
 	return e.Bytes()
 }
 
@@ -198,6 +198,20 @@ func GetSystemDateAndTimeResponse() []byte {
 		utc.Hour(), utc.Minute(), utc.Second(), utc.Year(), utc.Month(), utc.Day(),
 		loc.Hour(), loc.Minute(), loc.Second(), loc.Year(), loc.Month(), loc.Day(),
 	)
+	return e.Bytes()
+}
+
+func GetNetworkInterfacesResponse(mac string) []byte {
+	e := NewEnvelope()
+	e.Appendf(`<tds:GetNetworkInterfacesResponse>
+	<tds:NetworkInterfaces token="eth0">
+		<tt:Enabled>true</tt:Enabled>
+		<tt:Info>
+			<tt:Name>eth0</tt:Name>
+			<tt:HwAddress>%s</tt:HwAddress>
+		</tt:Info>
+	</tds:NetworkInterfaces>
+</tds:GetNetworkInterfacesResponse>`, mac)
 	return e.Bytes()
 }
 
@@ -449,7 +463,7 @@ var responses = map[string]string{
 	DeviceSetSystemDateAndTime:     `<tds:SetSystemDateAndTimeResponse />`,
 	DeviceSystemReboot:             `<tds:SystemRebootResponse><tds:Message>OK</tds:Message></tds:SystemRebootResponse>`,
 
-	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse />`,
+	// DeviceGetNetworkInterfaces is handled dynamically (per-stream MAC address).
 	DeviceGetNetworkProtocols:  `<tds:GetNetworkProtocolsResponse />`,
 
 	MediaGetVideoEncoderConfigurationOptions: `<trt:GetVideoEncoderConfigurationOptionsResponse>

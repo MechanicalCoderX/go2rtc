@@ -60,22 +60,11 @@ func Init() {
 		defaultMedias = ParseQuery(query)
 	}
 
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
+	serverUsername = conf.Mod.Username
+	serverPassword = conf.Mod.Password
+	serverPacketSize = conf.Mod.PacketSize
 
-			c := rtsp.NewServer(conn)
-			c.PacketSize = conf.Mod.PacketSize
-			// skip check auth for localhost
-			if conf.Mod.Username != "" && !conn.RemoteAddr().(*net.TCPAddr).IP.IsLoopback() {
-				c.Auth(conf.Mod.Username, conf.Mod.Password)
-			}
-			go tcpHandler(c)
-		}
-	}()
+	go acceptLoop(ln)
 }
 
 type Handler func(conn *rtsp.Conn) bool
@@ -86,11 +75,41 @@ func HandleFunc(handler Handler) {
 
 var Port string
 
+// ListenOn starts an additional RTSP listener on the given address (e.g. ":8555").
+// Uses the same stream-dispatch logic as the primary listener.
+// Returns an error if the address cannot be bound.
+func ListenOn(address string) error {
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	log.Info().Str("addr", address).Msg("[rtsp] additional listen")
+	go acceptLoop(ln)
+	return nil
+}
+
 // internal
 
 var log zerolog.Logger
 var handlers []Handler
 var defaultMedias []*core.Media
+var serverUsername, serverPassword string
+var serverPacketSize uint16
+
+func acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		c := rtsp.NewServer(conn)
+		c.PacketSize = serverPacketSize
+		if serverUsername != "" && !conn.RemoteAddr().(*net.TCPAddr).IP.IsLoopback() {
+			c.Auth(serverUsername, serverPassword)
+		}
+		go tcpHandler(c)
+	}
+}
 
 func rtspHandler(rawURL string) (core.Producer, error) {
 	rawURL, rawQuery, _ := strings.Cut(rawURL, "#")
