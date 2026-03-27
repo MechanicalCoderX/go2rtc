@@ -33,6 +33,7 @@ import (
 //	      resolution: "1920x1080"   # WxH advertised to clients
 //	      fps: 30
 //	      bitrate: 4096             # kbps
+//	      has_audio: true           # force-advertise audio even when stream is not yet connected
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
@@ -44,6 +45,7 @@ type streamOverride struct {
 	Resolution string `yaml:"resolution"`
 	FPS        int    `yaml:"fps"`
 	Bitrate    int    `yaml:"bitrate"`
+	HasAudio   bool   `yaml:"has_audio"`
 	IP         string `yaml:"ip"`
 }
 
@@ -316,6 +318,12 @@ func buildMeta(name string) *onvif.StreamMeta {
 		}
 		if ov.Model != "" {
 			meta.Model = ov.Model
+		}
+		// has_audio: true forces audio advertisement even when the stream is not yet
+		// connected — important for NVRs like UniFi Protect that interrogate during
+		// adoption before the RTSP source has had a chance to connect.
+		if ov.HasAudio {
+			meta.HasAudio = true
 		}
 	}
 
