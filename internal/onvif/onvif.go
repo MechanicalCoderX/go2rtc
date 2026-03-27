@@ -30,6 +30,8 @@ import (
 //	    fps: 30
 //	    bitrate: 4000
 type streamOverride struct {
+	Name       string `yaml:"name"`
+	Hardware   string `yaml:"hardware"`
 	Resolution string `yaml:"resolution"`
 	FPS        int    `yaml:"fps"`
 	Bitrate    int    `yaml:"bitrate"`
@@ -141,6 +143,12 @@ func buildMeta(name string) *onvif.StreamMeta {
 		}
 		if ov.Bitrate > 0 {
 			meta.Bitrate = ov.Bitrate
+		}
+		if ov.Name != "" {
+			meta.Name = ov.Name
+		}
+		if ov.Hardware != "" {
+			meta.Hardware = ov.Hardware
 		}
 	}
 

@@ -53,6 +53,8 @@ type StreamMeta struct {
 	HasAudio        bool   // whether the stream carries an audio track
 	Audio           string // ONVIF audio encoding ("G711" or "AAC"); "" → "AAC"
 	AudioSampleRate int    // audio sample rate in Hz; 0 → 22050 (AAC) or 8000 (G711)
+	Name            string // friendly display name shown in ONVIF clients; empty → stream key
+	Hardware        string // hardware identifier (e.g. camera model); used in per-stream device info
 }
 
 // nil-safe accessor methods — video
@@ -93,6 +95,13 @@ func (m *StreamMeta) video() string {
 }
 
 // nil-safe accessor methods — audio
+
+func (m *StreamMeta) displayName(fallback string) string {
+	if m != nil && m.Name != "" {
+		return m.Name
+	}
+	return fallback
+}
 
 func (m *StreamMeta) audio() string {
 	if m != nil && m.Audio != "" {
@@ -224,7 +233,7 @@ func GetProfileResponse(name string, meta *StreamMeta) []byte {
 func appendProfile(e *Envelope, tag, name string, meta *StreamMeta) {
 	// go2rtc name = ONVIF Profile Name = ONVIF Profile token
 	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, name)
-	e.Appendf(`<tt:Name>%s</tt:Name>`, name)
+	e.Appendf(`<tt:Name>%s</tt:Name>`, meta.displayName(name))
 	appendVideoSourceConfiguration(e, "VideoSourceConfiguration", name, meta)
 	if meta != nil && meta.HasAudio {
 		appendAudioSourceConfiguration(e, "AudioSourceConfiguration", name)
