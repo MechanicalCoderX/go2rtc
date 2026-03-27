@@ -33,25 +33,28 @@ import (
 //	      resolution: "1920x1080"   # WxH advertised to clients
 //	      fps: 30
 //	      bitrate: 4096             # kbps
-//	      has_audio: true           # force-advertise audio even when stream is not yet connected
+//	      has_audio: true           # applies to both main and sub stream profiles
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
 //	      substream:
-//	        stream: "my_camera_sub" # go2rtc stream name for the sub stream
-//	        resolution: "640x360"   # sub stream resolution
+//	        # stream: "my_camera_sub"  # optional: go2rtc stream name; defaults to "my_camera_sub"
+//	        resolution: "640x360"
 //	        fps: 15
 //	        bitrate: 512
-//	        has_audio: true
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
 // each with a unique MAC address derived from the stream name.
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
 type substreamOverride struct {
+	// Stream is the go2rtc stream name for the sub stream. If empty, defaults
+	// to the parent device name with "_sub" appended (e.g. "my_camera_sub").
 	Stream     string `yaml:"stream"`
 	Resolution string `yaml:"resolution"`
 	FPS        int    `yaml:"fps"`
 	Bitrate    int    `yaml:"bitrate"`
-	HasAudio   bool   `yaml:"has_audio"`
+	// hasAudio is not a YAML field; it is inherited from the parent device's
+	// has_audio: setting at startup so that both profiles share the same value.
+	hasAudio bool
 }
 
 type streamOverride struct {
@@ -66,10 +69,13 @@ type streamOverride struct {
 
 var streamOverrides map[string]streamOverride
 
-// subOverrides maps go2rtc sub-stream names to their override config, built at
-// startup from any device that has a substream: key. Used by buildMeta so that
-// the sub-stream gets its own resolution/fps/bitrate metadata.
+// subOverrides maps resolved go2rtc sub-stream names → their override config.
+// Built at startup; used by buildMeta and streamsForDevice.
 var subOverrides map[string]*substreamOverride
+
+// subStreamNames maps main device stream name → resolved sub-stream name.
+// Built at startup from substream: config (defaulting to "{main}_sub").
+var subStreamNames map[string]string
 
 var onvifPort int
 
@@ -85,12 +91,22 @@ func Init() {
 	streamOverrides = cfg.Mod.Devices
 	onvifPort = cfg.Mod.Port
 
-	// Build reverse-lookup map: sub-stream go2rtc name → its override config.
+	// Build sub-stream lookup tables.
 	subOverrides = make(map[string]*substreamOverride)
-	for _, ov := range streamOverrides {
-		if ov.Substream != nil && ov.Substream.Stream != "" {
-			subOverrides[ov.Substream.Stream] = ov.Substream
+	subStreamNames = make(map[string]string)
+	for mainName, ov := range streamOverrides {
+		if ov.Substream == nil {
+			continue
 		}
+		subName := ov.Substream.Stream
+		if subName == "" {
+			subName = mainName + "_sub" // convention: omitting stream: defaults to "{main}_sub"
+		}
+		sub := *ov.Substream // copy so we can set the unexported field
+		sub.Stream = subName
+		sub.hasAudio = ov.HasAudio // inherit device-level audio flag
+		subOverrides[subName] = &sub
+		subStreamNames[mainName] = subName
 	}
 
 	log = app.GetLogger("onvif")
@@ -370,7 +386,7 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if subOv.Bitrate > 0 {
 			meta.Bitrate = subOv.Bitrate
 		}
-		if subOv.HasAudio {
+		if subOv.hasAudio {
 			meta.HasAudio = true
 		}
 	}
@@ -390,8 +406,8 @@ func buildMetas(names []string) map[string]*onvif.StreamMeta {
 // streamsForDevice returns the ONVIF profile names for a device: always the
 // main stream, plus the sub stream name if one is configured.
 func streamsForDevice(mainName string) []string {
-	if ov, ok := streamOverrides[mainName]; ok && ov.Substream != nil && ov.Substream.Stream != "" {
-		return []string{mainName, ov.Substream.Stream}
+	if subName, ok := subStreamNames[mainName]; ok {
+		return []string{mainName, subName}
 	}
 	return []string{mainName}
 }
