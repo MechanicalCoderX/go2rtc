@@ -21,6 +21,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 )
 
 // streamOverride holds optional per-device ONVIF metadata from go2rtc.yaml:
@@ -46,6 +47,10 @@ import (
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
 type substreamOverride struct {
+	// present is set by UnmarshalYAML whenever the substream: key appears in
+	// the YAML config, even as a bare null (substream:). Absence of the key
+	// leaves it false so we can distinguish "not configured" from "all defaults".
+	present    bool
 	// Stream is the go2rtc stream name for the sub stream. If empty, defaults
 	// to the parent device name with "_sub" appended (e.g. "my_camera_sub").
 	Stream     string `yaml:"stream"`
@@ -57,14 +62,25 @@ type substreamOverride struct {
 	hasAudio bool
 }
 
+// UnmarshalYAML implements yaml.Unmarshaler so that a bare "substream:" null
+// entry is treated as "substream present with all defaults" rather than absent.
+func (s *substreamOverride) UnmarshalYAML(value *yaml.Node) error {
+	s.present = true
+	if value.Tag == "!!null" {
+		return nil
+	}
+	type plain substreamOverride // avoid infinite recursion
+	return value.Decode((*plain)(s))
+}
+
 type streamOverride struct {
-	Model      string             `yaml:"model"`
-	Resolution string             `yaml:"resolution"`
-	FPS        int                `yaml:"fps"`
-	Bitrate    int                `yaml:"bitrate"`
-	HasAudio   bool               `yaml:"has_audio"`
-	IP         string             `yaml:"ip"`
-	Substream  *substreamOverride `yaml:"substream"`
+	Model      string            `yaml:"model"`
+	Resolution string            `yaml:"resolution"`
+	FPS        int               `yaml:"fps"`
+	Bitrate    int               `yaml:"bitrate"`
+	HasAudio   bool              `yaml:"has_audio"`
+	IP         string            `yaml:"ip"`
+	Substream  substreamOverride `yaml:"substream"` // value type; presence tracked by .present
 }
 
 var streamOverrides map[string]streamOverride
@@ -95,14 +111,14 @@ func Init() {
 	subOverrides = make(map[string]*substreamOverride)
 	subStreamNames = make(map[string]string)
 	for mainName, ov := range streamOverrides {
-		if ov.Substream == nil {
+		if !ov.Substream.present {
 			continue
 		}
 		subName := ov.Substream.Stream
 		if subName == "" {
 			subName = mainName + "_sub" // convention: omitting stream: defaults to "{main}_sub"
 		}
-		sub := *ov.Substream // copy so we can set the unexported field
+		sub := ov.Substream // copy so we can set the unexported fields
 		sub.Stream = subName
 		sub.hasAudio = ov.HasAudio // inherit device-level audio flag
 		subOverrides[subName] = &sub
