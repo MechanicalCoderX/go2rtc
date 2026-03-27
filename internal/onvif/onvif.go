@@ -35,21 +35,42 @@ import (
 //	      bitrate: 4096             # kbps
 //	      has_audio: true           # force-advertise audio even when stream is not yet connected
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
+//	      substream:
+//	        stream: "my_camera_sub" # go2rtc stream name for the sub stream
+//	        resolution: "640x360"   # sub stream resolution
+//	        fps: 15
+//	        bitrate: 512
+//	        has_audio: true
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
 // each with a unique MAC address derived from the stream name.
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
-type streamOverride struct {
-	Model      string `yaml:"model"`
+type substreamOverride struct {
+	Stream     string `yaml:"stream"`
 	Resolution string `yaml:"resolution"`
 	FPS        int    `yaml:"fps"`
 	Bitrate    int    `yaml:"bitrate"`
 	HasAudio   bool   `yaml:"has_audio"`
-	IP         string `yaml:"ip"`
+}
+
+type streamOverride struct {
+	Model      string             `yaml:"model"`
+	Resolution string             `yaml:"resolution"`
+	FPS        int                `yaml:"fps"`
+	Bitrate    int                `yaml:"bitrate"`
+	HasAudio   bool               `yaml:"has_audio"`
+	IP         string             `yaml:"ip"`
+	Substream  *substreamOverride `yaml:"substream"`
 }
 
 var streamOverrides map[string]streamOverride
+
+// subOverrides maps go2rtc sub-stream names to their override config, built at
+// startup from any device that has a substream: key. Used by buildMeta so that
+// the sub-stream gets its own resolution/fps/bitrate metadata.
+var subOverrides map[string]*substreamOverride
+
 var onvifPort int
 
 func Init() {
@@ -63,6 +84,14 @@ func Init() {
 	app.LoadConfig(&cfg)
 	streamOverrides = cfg.Mod.Devices
 	onvifPort = cfg.Mod.Port
+
+	// Build reverse-lookup map: sub-stream go2rtc name → its override config.
+	subOverrides = make(map[string]*substreamOverride)
+	for _, ov := range streamOverrides {
+		if ov.Substream != nil && ov.Substream.Stream != "" {
+			subOverrides[ov.Substream.Stream] = ov.Substream
+		}
+	}
 
 	log = app.GetLogger("onvif")
 
@@ -142,7 +171,7 @@ func serveStreamDirect(w http.ResponseWriter, r *http.Request, stream string) {
 
 	log.Trace().Msgf("[onvif] server request stream=%s %s %s:\n%s", stream, r.Method, r.RequestURI, b)
 
-	names := []string{stream}
+	names := streamsForDevice(stream)
 	meta := buildMeta(stream)
 
 	var out []byte
@@ -183,7 +212,8 @@ func serveStreamDirect(w http.ResponseWriter, r *http.Request, stream string) {
 	case onvif.MediaGetProfiles:
 		out = onvif.GetProfilesResponse(names, buildMetas(names))
 	case onvif.MediaGetProfile:
-		out = onvif.GetProfileResponse(stream, meta)
+		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
+		out = onvif.GetProfileResponse(target, buildMeta(target))
 	case onvif.MediaGetVideoSourceConfigurations:
 		out = onvif.GetVideoSourceConfigurationsResponse(names, buildMetas(names))
 	case onvif.MediaGetVideoSourceConfiguration:
@@ -206,11 +236,13 @@ func serveStreamDirect(w http.ResponseWriter, r *http.Request, stream string) {
 		if err != nil {
 			host = r.Host
 		}
-		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + stream
+		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
+		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + target
 		out = onvif.GetStreamUriResponse(uri)
 
 	case onvif.MediaGetSnapshotUri:
-		// r.Host is the dedicated stream IP:onvifPort; snapshot is on the main API port
+		// r.Host is the dedicated stream IP:onvifPort; snapshot is on the main API port.
+		// Snapshots are only available for the main stream.
 		host, _, err := net.SplitHostPort(r.Host)
 		if err != nil {
 			host = r.Host
@@ -325,6 +357,22 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if ov.HasAudio {
 			meta.HasAudio = true
 		}
+	} else if subOv, ok := subOverrides[name]; ok {
+		// Apply sub-stream YAML overrides when this name is a configured sub stream.
+		if subOv.Resolution != "" {
+			if w, h := parseResolution(subOv.Resolution); w > 0 {
+				meta.Width, meta.Height = w, h
+			}
+		}
+		if subOv.FPS > 0 {
+			meta.FPS = subOv.FPS
+		}
+		if subOv.Bitrate > 0 {
+			meta.Bitrate = subOv.Bitrate
+		}
+		if subOv.HasAudio {
+			meta.HasAudio = true
+		}
 	}
 
 	return meta
@@ -337,6 +385,28 @@ func buildMetas(names []string) map[string]*onvif.StreamMeta {
 		metas[name] = buildMeta(name)
 	}
 	return metas
+}
+
+// streamsForDevice returns the ONVIF profile names for a device: always the
+// main stream, plus the sub stream name if one is configured.
+func streamsForDevice(mainName string) []string {
+	if ov, ok := streamOverrides[mainName]; ok && ov.Substream != nil && ov.Substream.Stream != "" {
+		return []string{mainName, ov.Substream.Stream}
+	}
+	return []string{mainName}
+}
+
+// profileStream maps an ONVIF ProfileToken to the go2rtc stream name that
+// should be used for GetStreamUri / GetProfile. Falls back to mainName if the
+// token is unrecognised.
+func profileStream(token, mainName string) string {
+	if token == mainName {
+		return mainName
+	}
+	if _, ok := subOverrides[token]; ok {
+		return token
+	}
+	return mainName
 }
 
 // resolutionFromH264 extracts width/height from the sprop-parameter-sets in an
@@ -410,7 +480,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	log.Trace().Msgf("[onvif] server request stream=%s %s %s:\n%s", stream, r.Method, r.RequestURI, b)
 
-	names := []string{stream}
+	names := streamsForDevice(stream)
 	meta := buildMeta(stream)
 
 	switch operation {
@@ -459,7 +529,8 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		b = onvif.GetProfilesResponse(names, buildMetas(names))
 
 	case onvif.MediaGetProfile:
-		b = onvif.GetProfileResponse(stream, meta)
+		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
+		b = onvif.GetProfileResponse(target, buildMeta(target))
 
 	case onvif.MediaGetVideoSourceConfigurations:
 		// important for Happytime Onvif Client
@@ -491,12 +562,12 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			host = r.Host // in case of Host without port
 		}
-
-		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + stream
-		b = onvif.GetStreamUriResponse(uri)
+		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
+		b = onvif.GetStreamUriResponse("rtsp://" + host + ":" + rtsp.Port + "/" + target)
 
 	case onvif.MediaGetSnapshotUri:
-		// r.Host is the main API host:port, so snapshot URL is already correct
+		// r.Host is the main API host:port, so snapshot URL is already correct.
+		// Snapshots are only available for the main stream.
 		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + stream
 		b = onvif.GetSnapshotUriResponse(uri)
 
