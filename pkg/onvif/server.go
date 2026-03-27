@@ -54,7 +54,8 @@ type StreamMeta struct {
 	Audio           string // ONVIF audio encoding ("G711" or "AAC"); "" → "AAC"
 	AudioSampleRate int    // audio sample rate in Hz; 0 → 22050 (AAC) or 8000 (G711)
 	Name            string // friendly display name shown in ONVIF clients; empty → stream key
-	Hardware        string // hardware identifier (e.g. camera model); used in per-stream device info
+	Model           string // device model name (e.g. camera model); shown in Protect/ONVIF clients
+	Version         string // device version string; shown as "device version" in Protect
 }
 
 // nil-safe accessor methods — video
@@ -96,9 +97,9 @@ func (m *StreamMeta) video() string {
 
 // nil-safe accessor methods — audio
 
-func (m *StreamMeta) displayName(fallback string) string {
-	if m != nil && m.Name != "" {
-		return m.Name
+func (m *StreamMeta) modelName(fallback string) string {
+	if m != nil && m.Model != "" {
+		return m.Model
 	}
 	return fallback
 }
@@ -200,15 +201,15 @@ func GetSystemDateAndTimeResponse() []byte {
 	return e.Bytes()
 }
 
-func GetDeviceInformationResponse(manuf, model, firmware, serial string) []byte {
+func GetDeviceInformationResponse(meta *StreamMeta, firmware, serial string) []byte {
 	e := NewEnvelope()
 	e.Appendf(`<tds:GetDeviceInformationResponse>
-	<tds:Manufacturer>%s</tds:Manufacturer>
+	<tds:Manufacturer></tds:Manufacturer>
 	<tds:Model>%s</tds:Model>
 	<tds:FirmwareVersion>%s</tds:FirmwareVersion>
 	<tds:SerialNumber>%s</tds:SerialNumber>
-	<tds:HardwareId>1.00</tds:HardwareId>
-</tds:GetDeviceInformationResponse>`, manuf, model, firmware, serial)
+	<tds:HardwareId>%s</tds:HardwareId>
+</tds:GetDeviceInformationResponse>`, meta.modelName("go2rtc"), firmware, serial, "1.00")
 	return e.Bytes()
 }
 
@@ -233,7 +234,7 @@ func GetProfileResponse(name string, meta *StreamMeta) []byte {
 func appendProfile(e *Envelope, tag, name string, meta *StreamMeta) {
 	// go2rtc name = ONVIF Profile Name = ONVIF Profile token
 	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, name)
-	e.Appendf(`<tt:Name>%s</tt:Name>`, meta.displayName(name))
+	e.Appendf(`<tt:Name>%s</tt:Name>`, meta.modelName(name))
 	appendVideoSourceConfiguration(e, "VideoSourceConfiguration", name, meta)
 	if meta != nil && meta.HasAudio {
 		appendAudioSourceConfiguration(e, "AudioSourceConfiguration", name)
@@ -411,6 +412,17 @@ func GetSnapshotUriResponse(uri string) []byte {
 	return e.Bytes()
 }
 
+func GetScopesResponse(meta *StreamMeta) []byte {
+	e := NewEnvelope()
+	e.Appendf(`<tds:GetScopesResponse>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/%s</tt:ScopeItem></tds:Scopes>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/hardware/%s</tt:ScopeItem></tds:Scopes>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>
+	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/Network_Video_Transmitter</tt:ScopeItem></tds:Scopes>
+</tds:GetScopesResponse>`, meta.modelName("go2rtc"), meta.modelName("go2rtc"))
+	return e.Bytes()
+}
+
 func StaticResponse(operation string) []byte {
 	switch operation {
 	case DeviceGetSystemDateAndTime:
@@ -439,12 +451,6 @@ var responses = map[string]string{
 
 	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse />`,
 	DeviceGetNetworkProtocols:  `<tds:GetNetworkProtocolsResponse />`,
-	DeviceGetScopes: `<tds:GetScopesResponse>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/go2rtc</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/location/github</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>
-	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/Network_Video_Transmitter</tt:ScopeItem></tds:Scopes>
-</tds:GetScopesResponse>`,
 
 	MediaGetVideoEncoderConfigurationOptions: `<trt:GetVideoEncoderConfigurationOptionsResponse>
    <trt:Options>

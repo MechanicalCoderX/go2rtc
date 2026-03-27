@@ -30,8 +30,7 @@ import (
 //	    fps: 30
 //	    bitrate: 4000
 type streamOverride struct {
-	Name       string `yaml:"name"`
-	Hardware   string `yaml:"hardware"`
+	Model      string `yaml:"model"`
 	Resolution string `yaml:"resolution"`
 	FPS        int    `yaml:"fps"`
 	Bitrate    int    `yaml:"bitrate"`
@@ -144,11 +143,8 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if ov.Bitrate > 0 {
 			meta.Bitrate = ov.Bitrate
 		}
-		if ov.Name != "" {
-			meta.Name = ov.Name
-		}
-		if ov.Hardware != "" {
-			meta.Hardware = ov.Hardware
+		if ov.Model != "" {
+			meta.Model = ov.Model
 		}
 	}
 
@@ -214,6 +210,20 @@ func parseResolution(s string) (int, int) {
 	return w, h
 }
 
+// deviceMeta returns the StreamMeta for the first stream that has any
+// device-level config (name, hardware, version). Used for device-wide
+// responses such as GetDeviceInformation and GetScopes.
+func deviceMeta() *onvif.StreamMeta {
+	for _, name := range streams.GetAllNames() {
+		if ov, ok := streamOverrides[name]; ok {
+			if ov.Model != "" {
+				return buildMeta(name)
+			}
+		}
+	}
+	return &onvif.StreamMeta{}
+}
+
 func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -240,7 +250,6 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		onvif.DeviceGetNetworkDefaultGateway,
 		onvif.DeviceGetNetworkProtocols,
 		onvif.DeviceGetNTP,
-		onvif.DeviceGetScopes,
 		onvif.MediaGetVideoEncoderConfigurationOptions:
 		b = onvif.StaticResponse(operation)
 
@@ -253,7 +262,10 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	case onvif.DeviceGetDeviceInformation:
 		// important for Hass: SerialNumber (unique server ID)
-		b = onvif.GetDeviceInformationResponse("", "go2rtc", app.Version, r.Host)
+		b = onvif.GetDeviceInformationResponse(deviceMeta(), app.Version, r.Host)
+
+	case onvif.DeviceGetScopes:
+		b = onvif.GetScopesResponse(deviceMeta())
 
 	case onvif.DeviceSystemReboot:
 		b = onvif.StaticResponse(operation)
