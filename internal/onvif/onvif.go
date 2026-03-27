@@ -110,6 +110,21 @@ func buildMeta(name string) *onvif.StreamMeta {
 				}
 			case core.KindAudio:
 				meta.HasAudio = true
+				if len(media.Codecs) > 0 && meta.Audio == "" {
+					codec := media.Codecs[0]
+					switch codec.Name {
+					case core.CodecPCMA, core.CodecPCMU:
+						meta.Audio = "G711"
+						meta.AudioSampleRate = 8000
+					case core.CodecAAC, core.CodecOpus:
+						// ONVIF AudioEncoding only supports G711/G726/AAC; map Opus -> AAC
+						// and preserve the actual clock rate so clients SDP-negotiate correctly.
+						meta.Audio = "AAC"
+						if codec.ClockRate > 0 {
+							meta.AudioSampleRate = int(codec.ClockRate)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -218,10 +233,7 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		onvif.DeviceGetNetworkProtocols,
 		onvif.DeviceGetNTP,
 		onvif.DeviceGetScopes,
-		onvif.MediaGetVideoEncoderConfigurationOptions,
-		onvif.MediaGetAudioEncoderConfigurations,
-		onvif.MediaGetAudioSources,
-		onvif.MediaGetAudioSourceConfigurations:
+		onvif.MediaGetVideoEncoderConfigurationOptions:
 		b = onvif.StaticResponse(operation)
 
 	case onvif.DeviceGetCapabilities:
@@ -271,6 +283,22 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	case onvif.MediaGetVideoEncoderConfiguration:
 		token := onvif.FindTagValue(b, "ConfigurationToken")
 		b = onvif.GetVideoEncoderConfigurationResponse(buildMeta(token))
+
+	case onvif.MediaGetAudioSources:
+		names := streams.GetAllNames()
+		b = onvif.GetAudioSourcesResponse(names, buildMetas(names))
+
+	case onvif.MediaGetAudioSourceConfigurations:
+		names := streams.GetAllNames()
+		b = onvif.GetAudioSourceConfigurationsResponse(names, buildMetas(names))
+
+	case onvif.MediaGetAudioEncoderConfigurations:
+		names := streams.GetAllNames()
+		b = onvif.GetAudioEncoderConfigurationsResponse(names, buildMetas(names))
+
+	case onvif.MediaGetAudioEncoderConfiguration:
+		token := onvif.FindTagValue(b, "ConfigurationToken")
+		b = onvif.GetAudioEncoderConfigurationResponse(buildMeta(token))
 
 	case onvif.MediaGetStreamUri:
 		host, _, err := net.SplitHostPort(r.Host)

@@ -26,6 +26,7 @@ const (
 )
 
 const (
+	MediaGetAudioEncoderConfiguration       = "GetAudioEncoderConfiguration"
 	MediaGetAudioEncoderConfigurations       = "GetAudioEncoderConfigurations"
 	MediaGetAudioSources                     = "GetAudioSources"
 	MediaGetAudioSourceConfigurations        = "GetAudioSourceConfigurations"
@@ -44,15 +45,17 @@ const (
 // StreamMeta holds per-stream metadata used to populate ONVIF responses.
 // Zero/empty values fall back to sensible defaults.
 type StreamMeta struct {
-	Width    int    // video width in pixels; 0 → 1920
-	Height   int    // video height in pixels; 0 → 1080
-	FPS      int    // frames per second; 0 → 30
-	Bitrate  int    // bitrate limit in kbps; 0 → 8192
-	Video    string // ONVIF encoding name ("H264" or "H265"); "" → "H264"
-	HasAudio bool   // whether the stream carries an audio track
+	Width           int    // video width in pixels; 0 → 1920
+	Height          int    // video height in pixels; 0 → 1080
+	FPS             int    // frames per second; 0 → 30
+	Bitrate         int    // video bitrate limit in kbps; 0 → 8192
+	Video           string // ONVIF encoding name ("H264" or "H265"); "" → "H264"
+	HasAudio        bool   // whether the stream carries an audio track
+	Audio           string // ONVIF audio encoding ("G711" or "AAC"); "" → "AAC"
+	AudioSampleRate int    // audio sample rate in Hz; 0 → 22050 (AAC) or 8000 (G711)
 }
 
-// nil-safe accessor methods
+// nil-safe accessor methods — video
 
 func (m *StreamMeta) w() int {
 	if m != nil && m.Width > 0 {
@@ -87,6 +90,25 @@ func (m *StreamMeta) video() string {
 		return m.Video
 	}
 	return "H264"
+}
+
+// nil-safe accessor methods — audio
+
+func (m *StreamMeta) audio() string {
+	if m != nil && m.Audio != "" {
+		return m.Audio
+	}
+	return "AAC"
+}
+
+func (m *StreamMeta) audioSampleRate() int {
+	if m != nil && m.AudioSampleRate > 0 {
+		return m.AudioSampleRate
+	}
+	if m != nil && m.Audio == "G711" {
+		return 8000
+	}
+	return 22050
 }
 
 func GetRequestAction(b []byte) string {
@@ -204,7 +226,13 @@ func appendProfile(e *Envelope, tag, name string, meta *StreamMeta) {
 	e.Appendf(`<trt:%s token="%s" fixed="true">`, tag, name)
 	e.Appendf(`<tt:Name>%s</tt:Name>`, name)
 	appendVideoSourceConfiguration(e, "VideoSourceConfiguration", name, meta)
+	if meta != nil && meta.HasAudio {
+		appendAudioSourceConfiguration(e, "AudioSourceConfiguration", name)
+	}
 	appendVideoEncoderConfiguration(e, "VideoEncoderConfiguration", meta)
+	if meta != nil && meta.HasAudio {
+		appendAudioEncoderConfiguration(e, "AudioEncoderConfiguration", meta)
+	}
 	e.Appendf(`</trt:%s>`, tag)
 }
 
@@ -294,6 +322,74 @@ func appendVideoEncoderConfiguration(e *Envelope, tag string, meta *StreamMeta) 
 	</tt:%s>`, tag)
 }
 
+// Audio response builders
+
+func GetAudioSourcesResponse(names []string, metas map[string]*StreamMeta) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetAudioSourcesResponse>`)
+	for _, name := range names {
+		if m := metas[name]; m != nil && m.HasAudio {
+			e.Appendf(`<trt:AudioSources token="%s">
+	<tt:Channels>1</tt:Channels>
+</trt:AudioSources>`, name)
+		}
+	}
+	e.Append(`</trt:GetAudioSourcesResponse>`)
+	return e.Bytes()
+}
+
+func GetAudioSourceConfigurationsResponse(names []string, metas map[string]*StreamMeta) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetAudioSourceConfigurationsResponse>`)
+	for _, name := range names {
+		if m := metas[name]; m != nil && m.HasAudio {
+			appendAudioSourceConfiguration(e, "Configurations", name)
+		}
+	}
+	e.Append(`</trt:GetAudioSourceConfigurationsResponse>`)
+	return e.Bytes()
+}
+
+func GetAudioEncoderConfigurationsResponse(names []string, metas map[string]*StreamMeta) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetAudioEncoderConfigurationsResponse>`)
+	for _, name := range names {
+		if m := metas[name]; m != nil && m.HasAudio {
+			appendAudioEncoderConfiguration(e, "Configurations", m)
+		}
+	}
+	e.Append(`</trt:GetAudioEncoderConfigurationsResponse>`)
+	return e.Bytes()
+}
+
+func GetAudioEncoderConfigurationResponse(meta *StreamMeta) []byte {
+	e := NewEnvelope()
+	e.Append(`<trt:GetAudioEncoderConfigurationResponse>`)
+	appendAudioEncoderConfiguration(e, "AudioEncoderConfiguration", meta)
+	e.Append(`</trt:GetAudioEncoderConfigurationResponse>`)
+	return e.Bytes()
+}
+
+func appendAudioSourceConfiguration(e *Envelope, tag, name string) {
+	// go2rtc name = ONVIF AudioSource token = AudioSourceConfiguration token
+	e.Appendf(`<tt:%s token="%s" fixed="true">
+	<tt:Name>ASC</tt:Name>
+	<tt:UseCount>1</tt:UseCount>
+	<tt:SourceToken>%s</tt:SourceToken>
+</tt:%s>`, tag, name, name, tag)
+}
+
+func appendAudioEncoderConfiguration(e *Envelope, tag string, meta *StreamMeta) {
+	e.Appendf(`<tt:%s token="aec">
+	<tt:Name>AEC</tt:Name>
+	<tt:UseCount>1</tt:UseCount>
+	<tt:Encoding>%s</tt:Encoding>
+	<tt:Bitrate>64</tt:Bitrate>
+	<tt:SampleRate>%d</tt:SampleRate>
+	<tt:SessionTimeout>PT10S</tt:SessionTimeout>
+</tt:%s>`, tag, meta.audio(), meta.audioSampleRate(), tag)
+}
+
 func GetStreamUriResponse(uri string) []byte {
 	e := NewEnvelope()
 	e.Appendf(`<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri></trt:MediaUri></trt:GetStreamUriResponse>`, uri)
@@ -340,10 +436,6 @@ var responses = map[string]string{
 	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>
 	<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/Network_Video_Transmitter</tt:ScopeItem></tds:Scopes>
 </tds:GetScopesResponse>`,
-
-	MediaGetAudioEncoderConfigurations: `<trt:GetAudioEncoderConfigurationsResponse />`,
-	MediaGetAudioSources:               `<trt:GetAudioSourcesResponse />`,
-	MediaGetAudioSourceConfigurations:  `<trt:GetAudioSourceConfigurationsResponse />`,
 
 	MediaGetVideoEncoderConfigurationOptions: `<trt:GetVideoEncoderConfigurationOptionsResponse>
    <trt:Options>
