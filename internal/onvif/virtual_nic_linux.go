@@ -30,9 +30,13 @@ func ensureVirtualNIC(streamName, targetIP string) (func(), error) {
 	cidr := fmt.Sprintf("%s/%d", targetIP, prefix)
 
 	if out, err := exec.Command("ip", "link", "add", ifaceName,
-		"link", parent, "type", "macvlan", "mode", "bridge",
-		"address", mac).CombinedOutput(); err != nil {
+		"link", parent, "type", "macvlan", "mode", "bridge").CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("ip link add: %w: %s", err, out)
+	}
+
+	if out, err := exec.Command("ip", "link", "set", ifaceName, "address", mac).CombinedOutput(); err != nil {
+		exec.Command("ip", "link", "delete", ifaceName).Run()
+		return nil, fmt.Errorf("ip link set address: %w: %s", err, out)
 	}
 
 	if out, err := exec.Command("ip", "addr", "add", cidr, "dev", ifaceName).CombinedOutput(); err != nil {
