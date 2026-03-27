@@ -1,6 +1,7 @@
 package onvif
 
 import (
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -15,11 +16,34 @@ import (
 	"github.com/AlexxIT/go2rtc/internal/rtsp"
 	"github.com/AlexxIT/go2rtc/internal/streams"
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/rs/zerolog"
 )
 
+// streamOverride holds optional per-stream ONVIF metadata from go2rtc.yaml:
+//
+//	onvif:
+//	  my_camera:
+//	    resolution: "1920x1080"
+//	    fps: 30
+//	    bitrate: 4000
+type streamOverride struct {
+	Resolution string `yaml:"resolution"`
+	FPS        int    `yaml:"fps"`
+	Bitrate    int    `yaml:"bitrate"`
+}
+
+var streamOverrides map[string]streamOverride
+
 func Init() {
+	var cfg struct {
+		Mod map[string]streamOverride `yaml:"onvif"`
+	}
+	app.LoadConfig(&cfg)
+	streamOverrides = cfg.Mod
+
 	log = app.GetLogger("onvif")
 
 	streams.HandleFunc("onvif", streamOnvif)
@@ -58,6 +82,115 @@ func streamOnvif(rawURL string) (core.Producer, error) {
 	return streams.GetProducer(uri)
 }
 
+// buildMeta constructs a StreamMeta for the named stream by combining live
+// codec information (when available) with any YAML config overrides.
+func buildMeta(name string) *onvif.StreamMeta {
+	meta := &onvif.StreamMeta{}
+
+	// Populate from live stream medias when the producer is connected.
+	if stream := streams.Get(name); stream != nil {
+		for _, media := range stream.GetMedias() {
+			switch media.Kind {
+			case core.KindVideo:
+				if len(media.Codecs) == 0 {
+					continue
+				}
+				codec := media.Codecs[0]
+				switch codec.Name {
+				case core.CodecH264:
+					meta.Video = "H264"
+					if w, h := resolutionFromH264(codec.FmtpLine); w > 0 {
+						meta.Width, meta.Height = w, h
+					}
+				case core.CodecH265:
+					meta.Video = "H265"
+					if w, h := resolutionFromH265(codec.FmtpLine); w > 0 {
+						meta.Width, meta.Height = w, h
+					}
+				}
+			case core.KindAudio:
+				meta.HasAudio = true
+			}
+		}
+	}
+
+	// Apply YAML config overrides (take precedence over live values).
+	if ov, ok := streamOverrides[name]; ok {
+		if ov.Resolution != "" {
+			if w, h := parseResolution(ov.Resolution); w > 0 {
+				meta.Width, meta.Height = w, h
+			}
+		}
+		if ov.FPS > 0 {
+			meta.FPS = ov.FPS
+		}
+		if ov.Bitrate > 0 {
+			meta.Bitrate = ov.Bitrate
+		}
+	}
+
+	return meta
+}
+
+// buildMetas returns a name→meta map for a slice of stream names.
+func buildMetas(names []string) map[string]*onvif.StreamMeta {
+	metas := make(map[string]*onvif.StreamMeta, len(names))
+	for _, name := range names {
+		metas[name] = buildMeta(name)
+	}
+	return metas
+}
+
+// resolutionFromH264 extracts width/height from the sprop-parameter-sets in an
+// H264 fmtp line by decoding the SPS NALU. Returns (0,0) on failure.
+func resolutionFromH264(fmtpLine string) (int, int) {
+	ps := core.Between(fmtpLine, "sprop-parameter-sets=", ",")
+	if ps == "" {
+		return 0, 0
+	}
+	spsBytes, err := base64.StdEncoding.DecodeString(ps)
+	if err != nil || len(spsBytes) < 4 {
+		return 0, 0
+	}
+	sps := h264.DecodeSPS(spsBytes)
+	if sps == nil {
+		return 0, 0
+	}
+	return int(sps.Width()), int(sps.Height())
+}
+
+// resolutionFromH265 extracts width/height from the sprop-sps in an H265 fmtp
+// line. Returns (0,0) on failure.
+func resolutionFromH265(fmtpLine string) (int, int) {
+	_, spsBytes, _ := h265.GetParameterSet(fmtpLine)
+	if len(spsBytes) < 2 {
+		return 0, 0
+	}
+	sps := h265.DecodeSPS(spsBytes)
+	if sps == nil {
+		return 0, 0
+	}
+	return int(sps.Width()), int(sps.Height())
+}
+
+// parseResolution parses a "WxH" string (e.g. "1920x1080").
+// Returns (0,0) if the string is not in the expected format.
+func parseResolution(s string) (int, int) {
+	i := strings.IndexByte(s, 'x')
+	if i <= 0 {
+		return 0, 0
+	}
+	w, err := strconv.Atoi(s[:i])
+	if err != nil || w <= 0 {
+		return 0, 0
+	}
+	h, err := strconv.Atoi(s[i+1:])
+	if err != nil || h <= 0 {
+		return 0, 0
+	}
+	return w, h
+}
+
 func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -85,10 +218,8 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		onvif.DeviceGetNetworkProtocols,
 		onvif.DeviceGetNTP,
 		onvif.DeviceGetScopes,
-		onvif.MediaGetVideoEncoderConfiguration,
-		onvif.MediaGetVideoEncoderConfigurations,
-		onvif.MediaGetAudioEncoderConfigurations,
 		onvif.MediaGetVideoEncoderConfigurationOptions,
+		onvif.MediaGetAudioEncoderConfigurations,
 		onvif.MediaGetAudioSources,
 		onvif.MediaGetAudioSourceConfigurations:
 		b = onvif.StaticResponse(operation)
@@ -112,23 +243,34 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case onvif.MediaGetVideoSources:
-		b = onvif.GetVideoSourcesResponse(streams.GetAllNames())
+		names := streams.GetAllNames()
+		b = onvif.GetVideoSourcesResponse(names, buildMetas(names))
 
 	case onvif.MediaGetProfiles:
 		// important for Hass: H264 codec, width, height
-		b = onvif.GetProfilesResponse(streams.GetAllNames())
+		names := streams.GetAllNames()
+		b = onvif.GetProfilesResponse(names, buildMetas(names))
 
 	case onvif.MediaGetProfile:
 		token := onvif.FindTagValue(b, "ProfileToken")
-		b = onvif.GetProfileResponse(token)
+		b = onvif.GetProfileResponse(token, buildMeta(token))
 
 	case onvif.MediaGetVideoSourceConfigurations:
 		// important for Happytime Onvif Client
-		b = onvif.GetVideoSourceConfigurationsResponse(streams.GetAllNames())
+		names := streams.GetAllNames()
+		b = onvif.GetVideoSourceConfigurationsResponse(names, buildMetas(names))
 
 	case onvif.MediaGetVideoSourceConfiguration:
 		token := onvif.FindTagValue(b, "ConfigurationToken")
-		b = onvif.GetVideoSourceConfigurationResponse(token)
+		b = onvif.GetVideoSourceConfigurationResponse(token, buildMeta(token))
+
+	case onvif.MediaGetVideoEncoderConfigurations:
+		names := streams.GetAllNames()
+		b = onvif.GetVideoEncoderConfigurationsResponse(names, buildMetas(names))
+
+	case onvif.MediaGetVideoEncoderConfiguration:
+		token := onvif.FindTagValue(b, "ConfigurationToken")
+		b = onvif.GetVideoEncoderConfigurationResponse(buildMeta(token))
 
 	case onvif.MediaGetStreamUri:
 		host, _, err := net.SplitHostPort(r.Host)
