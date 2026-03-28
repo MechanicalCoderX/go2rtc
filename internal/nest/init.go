@@ -113,6 +113,7 @@ func apiNest(w http.ResponseWriter, r *http.Request) {
 	params := url.Values{
 		"redirect_uri":  {redirectURI},
 		"access_type":   {"offline"},
+		"prompt":        {"consent"}, // forces refresh_token on every authorization
 		"response_type": {"code"},
 		"scope":         {"https://www.googleapis.com/auth/sdm.service"},
 		"client_id":     {clientID},
