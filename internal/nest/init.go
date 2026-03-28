@@ -82,17 +82,23 @@ func apiNest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// redirectURI comes from the client: the browser knows its own external URL
+	// correctly even behind reverse proxies, DDNS, or non-standard ports.
+	redirectURI := query.Get("redirect_uri")
+	if redirectURI == "" {
+		// Fallback for API callers that don't supply redirect_uri.
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		redirectURI = fmt.Sprintf("%s://%s/api/nest/callback", scheme, r.Host)
+	}
+
 	state, err := newState()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	redirectURI := fmt.Sprintf("%s://%s/api/nest/callback", scheme, r.Host)
 
 	pendingMu.Lock()
 	pending[state] = pendingAuth{
@@ -118,7 +124,6 @@ func apiNest(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"authorize_url": authURL,
 		"state":         state,
-		"redirect_uri":  redirectURI,
 	})
 }
 
