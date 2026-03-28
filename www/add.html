@@ -203,10 +203,10 @@
         <form id="nest-form">
             <input type="text" name="client_id" placeholder="client_id" required>
             <input type="text" name="client_secret" placeholder="client_secret" required>
-            <input type="text" name="refresh_token" placeholder="refresh_token" required>
             <input type="text" name="project_id" placeholder="project_id" required>
-            <button type="submit">login</button>
+            <button type="submit">Login with Google</button>
         </form>
+        <small id="nest-redirect-hint" style="display:none; color:#aaa;"></small>
         <table id="nest-table"></table>
     </div>
     <script>
@@ -217,11 +217,56 @@
         document.getElementById('nest-form').addEventListener('submit', async ev => {
             ev.preventDefault();
 
+            const table = document.getElementById('nest-table');
+            const hint  = document.getElementById('nest-redirect-hint');
+
             const query = new URLSearchParams(new FormData(ev.target));
-            const url = new URL('api/nest?' + query.toString(), location.href);
+            const url   = new URL('api/nest?' + query.toString(), location.href);
+
+            table.innerText = 'loading...';
+            hint.style.display = 'none';
 
             const r = await fetch(url, {cache: 'no-cache'});
-            await getSources('nest-table', r);
+            if (!r.ok) {
+                table.innerText = await r.text();
+                return;
+            }
+
+            const data = await r.json();
+
+            // OAuth2 flow: server returned an authorize_url — open a popup.
+            if (data.authorize_url) {
+                hint.textContent = 'Redirect URI to register in Google Cloud Console: ' + data.redirect_uri;
+                hint.style.display = 'block';
+
+                const popup = window.open(data.authorize_url, 'nest_auth', 'width=520,height=640');
+                table.innerText = 'Waiting for Google login…';
+
+                const poll = setInterval(async () => {
+                    const sr = await fetch(
+                        new URL('api/nest/status?state=' + data.state, location.href),
+                        {cache: 'no-cache'}
+                    );
+                    if (sr.status === 204) {
+                        // Still waiting; check if the popup was closed without completing auth.
+                        if (popup && popup.closed) {
+                            clearInterval(poll);
+                            table.innerText = 'Login cancelled.';
+                        }
+                        return;
+                    }
+                    clearInterval(poll);
+                    if (!sr.ok) {
+                        table.innerText = await sr.text();
+                    } else {
+                        drawTable(table, await sr.json());
+                    }
+                }, 500);
+                return;
+            }
+
+            // Direct sources response (server returned sources immediately).
+            drawTable(table, data);
         });
     </script>
 

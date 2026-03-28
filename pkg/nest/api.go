@@ -550,3 +550,42 @@ func (a *API) StopExtendStreamTimer() {
 		a.extendStop = nil
 	}
 }
+
+// ExchangeAuthCode exchanges a Google OAuth2 authorization code for a refresh
+// token. The redirectURI must exactly match the one used when the auth URL was
+// generated and must be registered in the Google Cloud Console.
+func ExchangeAuthCode(clientID, clientSecret, code, redirectURI string) (string, error) {
+	data := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	res, err := client.PostForm("https://www.googleapis.com/oauth2/v4/token", data)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != 200 {
+		return "", errors.New("nest: wrong status: " + res.Status)
+	}
+
+	var resv struct {
+		RefreshToken string        `json:"refresh_token"`
+		AccessToken  string        `json:"access_token"`
+		ExpiresIn    time.Duration `json:"expires_in"`
+	}
+	if err = json.NewDecoder(res.Body).Decode(&resv); err != nil {
+		return "", err
+	}
+
+	if resv.RefreshToken == "" {
+		return "", errors.New("nest: no refresh_token returned; ensure access_type=offline was set in the auth URL")
+	}
+
+	return resv.RefreshToken, nil
+}
