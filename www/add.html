@@ -204,29 +204,33 @@
             <input type="text" name="client_id" placeholder="client_id" required>
             <input type="text" name="client_secret" placeholder="client_secret" required>
             <input type="text" name="project_id" placeholder="project_id" required>
-            <input type="text" name="redirect_uri" id="nest-redirect-uri" size="45"
+            <input type="text" name="redirect_uri" id="nest-redirect-uri" size="50"
                    title="Must be registered as an Authorized redirect URI in Google Cloud Console">
-            <small>Register the URL above as an <strong>Authorized redirect URI</strong> on your OAuth 2.0 client &rarr; <a id="nest-console-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console &#8599;</a></small>
-            <small>On a private IP and GCP won't accept it? <a href="#" id="nest-manual-toggle">Switch to manual mode.</a></small>
+            <small>
+                Register the URL above in your <strong>Web application</strong> OAuth client &rarr;
+                <a id="nest-console-link" href="https://console.cloud.google.com/apis/credentials"
+                   target="_blank" rel="noopener noreferrer">Google Cloud Console &#8599;</a><br>
+                <em>GCP accepts <code>http://127.0.0.1</code> loopback URIs for Web app clients — register it once and it works for any setup.</em>
+            </small>
             <button type="submit">Login with Google</button>
         </form>
-        <div id="nest-manual-section" style="display:none">
+        <!-- Paste fallback: shown automatically when the loopback redirect can't reach this
+             server (browser is on a different machine from go2rtc). After authenticating,
+             the popup will show a connection error — copy the full URL from its address bar. -->
+        <div id="nest-paste-section" style="display:none">
             <small>
-                In GCP, use a <strong>Desktop&nbsp;app</strong> OAuth client and register
-                <code>http://localhost</code> as an Authorized redirect URI (no port needed).
-                Then click <em>Login with Google</em>. A new tab will open — after authenticating,
-                your browser will show a connection error (that is expected). Copy the full URL
-                from the address bar and paste it below.
+                Your browser couldn't reach go2rtc via <code>127.0.0.1</code> — that's expected
+                when your browser and go2rtc are on different machines. Copy the full URL from the
+                popup's address bar (it contains <code>?code=…</code>) and paste it below.
             </small>
-            <input type="text" id="nest-paste-url" placeholder="Paste full redirect URL from address bar (http://localhost:…?code=…&state=…)" size="60">
+            <input type="text" id="nest-paste-url"
+                   placeholder="Paste full redirect URL (http://127.0.0.1:…?code=…&state=…)" size="60">
             <button type="button" id="nest-paste-submit">Submit code</button>
         </div>
         <input type="hidden" id="nest-state">
         <table id="nest-table"></table>
     </div>
     <script>
-        let nestManualMode = false;
-
         function nestUpdateConsoleLink() {
             const clientId = document.querySelector('#nest-form [name="client_id"]').value.trim();
             const link = document.getElementById('nest-console-link');
@@ -239,31 +243,16 @@
             }
         }
 
-        document.getElementById('nest-manual-toggle').addEventListener('click', ev => {
-            ev.preventDefault();
-            nestManualMode = !nestManualMode;
-            const field   = document.getElementById('nest-redirect-uri');
-            const section = document.getElementById('nest-manual-section');
-            if (nestManualMode) {
-                const portSuffix = location.port ? ':' + location.port : '';
-                field.value = 'http://localhost' + portSuffix + '/api/nest/callback';
-                section.style.display = '';
-                ev.target.textContent = 'Switch back to automatic mode.';
-            } else {
-                field.value = location.origin + '/api/nest/callback';
-                section.style.display = 'none';
-                ev.target.textContent = 'Switch to manual mode.';
-            }
-            nestUpdateConsoleLink();
-        });
-
         document.getElementById('nest').addEventListener('click', async ev => {
             ev.target.nextElementSibling.style.display = 'grid';
-            // Pre-populate redirect_uri from the browser's own origin — correct
-            // even behind a reverse proxy, DDNS, or any non-direct access.
             const field = document.getElementById('nest-redirect-uri');
             if (!field.value) {
-                field.value = location.origin + '/api/nest/callback';
+                // Use 127.0.0.1 loopback — GCP accepts this for Web app clients unlike
+                // private IPs (10.x, 192.168.x). go2rtc listens on 0.0.0.0 so it handles
+                // the callback when browser and server are on the same machine. When remote,
+                // the paste fallback below catches the code from the address bar.
+                const portSuffix = location.port ? ':' + location.port : '';
+                field.value = 'http://127.0.0.1' + portSuffix + '/api/nest/callback';
             }
             nestUpdateConsoleLink();
         });
@@ -321,7 +310,9 @@
         document.getElementById('nest-form').addEventListener('submit', async ev => {
             ev.preventDefault();
 
-            const table = document.getElementById('nest-table');
+            const table       = document.getElementById('nest-table');
+            const pasteSection = document.getElementById('nest-paste-section');
+            pasteSection.style.display = 'none';
 
             const query = new URLSearchParams(new FormData(ev.target));
             const url   = new URL('api/nest?' + query.toString(), location.href);
@@ -336,22 +327,16 @@
 
             const data = await r.json();
 
-            // OAuth2 flow: server returned an authorize_url.
+            // OAuth2 flow: server returned an authorize_url — open a popup and poll.
             if (data.authorize_url) {
                 document.getElementById('nest-state').value = data.state;
 
-                if (nestManualMode) {
-                    // Manual mode: open auth in a new tab; user pastes the redirect URL.
-                    window.open(data.authorize_url, '_blank', 'noopener,noreferrer');
-                    table.innerHTML = 'Authenticated? Paste the redirect URL above and click <em>Submit code</em>.';
-                    return;
-                }
-
-                // Automatic mode: popup + poll.
                 const popup = window.open(data.authorize_url, 'nest_auth', 'width=520,height=640');
                 table.innerText = 'Waiting for Google login…';
 
                 const poll = nestPollState(data.state);
+
+                // Watch for popup close (user cancelled).
                 const guard = setInterval(() => {
                     if (popup && popup.closed) {
                         clearInterval(guard);
@@ -361,6 +346,17 @@
                         }
                     }
                 }, 500);
+
+                // After 20 s with no result, the loopback redirect couldn't reach this server
+                // (browser is remote). Show the paste fallback so the user can copy the code
+                // from the popup's address bar.
+                setTimeout(() => {
+                    if (table.innerText !== 'Waiting for Google login…') return;
+                    clearInterval(guard);
+                    clearInterval(poll);
+                    pasteSection.style.display = '';
+                    table.innerText = 'See instructions above.';
+                }, 20000);
 
                 return;
             }
