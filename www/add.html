@@ -294,10 +294,38 @@
                 return;
             }
             table.innerText = 'Processing…';
-            const cb = new URL('api/nest/callback', location.href);
-            cb.searchParams.set('code', code);
-            cb.searchParams.set('state', state);
-            await fetch(cb, {cache: 'no-cache'});
+
+            // If go2rtc and the browser are on the same machine, the popup's redirect
+            // to 127.0.0.1 may have already been processed — check for results first
+            // before trying to re-exchange the code (codes are single-use).
+            const preCheck = await fetch(
+                new URL('api/nest/status?state=' + state, location.href),
+                {cache: 'no-cache'}
+            );
+            if (preCheck.status === 200) {
+                drawTable(table, await preCheck.json());
+                return;
+            }
+
+            // No results yet — ask the server to exchange the pasted code.
+            let resp;
+            try {
+                const cb = new URL('api/nest/callback', location.href);
+                cb.searchParams.set('code', code);
+                cb.searchParams.set('state', state);
+                resp = await fetch(cb, {cache: 'no-cache'});
+            } catch (e) {
+                table.innerText = 'Network error: ' + e.message;
+                return;
+            }
+
+            const body = await resp.text();
+            if (!body.includes('Login successful')) {
+                const m = body.match(/<p>([^<]+)<\/p>/);
+                table.innerText = m ? m[1] : 'Server error — check go2rtc logs.';
+                return;
+            }
+
             const poll = nestPollState(state);
             setTimeout(() => {
                 clearInterval(poll);
