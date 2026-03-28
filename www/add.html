@@ -207,11 +207,26 @@
             <input type="text" name="redirect_uri" id="nest-redirect-uri" size="45"
                    title="Must be registered as an Authorized redirect URI in Google Cloud Console">
             <small>Register the URL above as an <strong>Authorized redirect URI</strong> on your OAuth 2.0 client &rarr; <a id="nest-console-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console &#8599;</a></small>
+            <small>On a private IP and GCP won't accept it? <a href="#" id="nest-manual-toggle">Switch to manual mode.</a></small>
             <button type="submit">Login with Google</button>
         </form>
+        <div id="nest-manual-section" style="display:none">
+            <small>
+                In GCP, use a <strong>Desktop&nbsp;app</strong> OAuth client and register
+                <code>http://localhost</code> as an Authorized redirect URI (no port needed).
+                Then click <em>Login with Google</em>. A new tab will open — after authenticating,
+                your browser will show a connection error (that is expected). Copy the full URL
+                from the address bar and paste it below.
+            </small>
+            <input type="text" id="nest-paste-url" placeholder="Paste full redirect URL from address bar (http://localhost:…?code=…&state=…)" size="60">
+            <button type="button" id="nest-paste-submit">Submit code</button>
+        </div>
+        <input type="hidden" id="nest-state">
         <table id="nest-table"></table>
     </div>
     <script>
+        let nestManualMode = false;
+
         function nestUpdateConsoleLink() {
             const clientId = document.querySelector('#nest-form [name="client_id"]').value.trim();
             const link = document.getElementById('nest-console-link');
@@ -223,6 +238,24 @@
                 link.href = 'https://console.cloud.google.com/apis/credentials';
             }
         }
+
+        document.getElementById('nest-manual-toggle').addEventListener('click', ev => {
+            ev.preventDefault();
+            nestManualMode = !nestManualMode;
+            const field   = document.getElementById('nest-redirect-uri');
+            const section = document.getElementById('nest-manual-section');
+            if (nestManualMode) {
+                const portSuffix = location.port ? ':' + location.port : '';
+                field.value = 'http://localhost' + portSuffix + '/api/nest/callback';
+                section.style.display = '';
+                ev.target.textContent = 'Switch back to automatic mode.';
+            } else {
+                field.value = location.origin + '/api/nest/callback';
+                section.style.display = 'none';
+                ev.target.textContent = 'Switch to manual mode.';
+            }
+            nestUpdateConsoleLink();
+        });
 
         document.getElementById('nest').addEventListener('click', async ev => {
             ev.target.nextElementSibling.style.display = 'grid';
@@ -236,6 +269,54 @@
         });
 
         document.querySelector('#nest-form [name="client_id"]').addEventListener('input', nestUpdateConsoleLink);
+
+        function nestPollState(state) {
+            const table = document.getElementById('nest-table');
+            const poll = setInterval(async () => {
+                const sr = await fetch(
+                    new URL('api/nest/status?state=' + state, location.href),
+                    {cache: 'no-cache'}
+                );
+                if (sr.status === 204) return;
+                clearInterval(poll);
+                if (!sr.ok) {
+                    table.innerText = await sr.text();
+                } else {
+                    drawTable(table, await sr.json());
+                }
+            }, 500);
+            return poll;
+        }
+
+        document.getElementById('nest-paste-submit').addEventListener('click', async () => {
+            const table     = document.getElementById('nest-table');
+            const pastedUrl = document.getElementById('nest-paste-url').value.trim();
+            let code, state;
+            try {
+                const u = new URL(pastedUrl);
+                code  = u.searchParams.get('code');
+                state = u.searchParams.get('state') || document.getElementById('nest-state').value;
+            } catch (e) {
+                table.innerText = 'Invalid URL — paste the full address bar URL.';
+                return;
+            }
+            if (!code || !state) {
+                table.innerText = 'URL is missing a code or state — paste the full address bar URL.';
+                return;
+            }
+            table.innerText = 'Processing…';
+            const cb = new URL('api/nest/callback', location.href);
+            cb.searchParams.set('code', code);
+            cb.searchParams.set('state', state);
+            await fetch(cb, {cache: 'no-cache'});
+            const poll = nestPollState(state);
+            setTimeout(() => {
+                clearInterval(poll);
+                if (table.innerText === 'Processing…') {
+                    table.innerText = 'No response — the code may have expired. Please try again.';
+                }
+            }, 15000);
+        });
 
         document.getElementById('nest-form').addEventListener('submit', async ev => {
             ev.preventDefault();
@@ -255,38 +336,39 @@
 
             const data = await r.json();
 
-            // OAuth2 flow: server returned an authorize_url — open a popup.
+            // OAuth2 flow: server returned an authorize_url.
             if (data.authorize_url) {
+                document.getElementById('nest-state').value = data.state;
 
+                if (nestManualMode) {
+                    // Manual mode: open auth in a new tab; user pastes the redirect URL.
+                    window.open(data.authorize_url, '_blank', 'noopener,noreferrer');
+                    table.innerHTML = 'Authenticated? Paste the redirect URL above and click <em>Submit code</em>.';
+                    return;
+                }
+
+                // Automatic mode: popup + poll.
                 const popup = window.open(data.authorize_url, 'nest_auth', 'width=520,height=640');
                 table.innerText = 'Waiting for Google login…';
 
-                const poll = setInterval(async () => {
-                    const sr = await fetch(
-                        new URL('api/nest/status?state=' + data.state, location.href),
-                        {cache: 'no-cache'}
-                    );
-                    if (sr.status === 204) {
-                        // Still waiting; check if the popup was closed without completing auth.
-                        if (popup && popup.closed) {
-                            clearInterval(poll);
+                const poll = nestPollState(data.state);
+                const guard = setInterval(() => {
+                    if (popup && popup.closed) {
+                        clearInterval(guard);
+                        clearInterval(poll);
+                        if (table.innerText === 'Waiting for Google login…') {
                             table.innerText = 'Login cancelled.';
                         }
-                        return;
-                    }
-                    clearInterval(poll);
-                    if (!sr.ok) {
-                        table.innerText = await sr.text();
-                    } else {
-                        drawTable(table, await sr.json());
                     }
                 }, 500);
+
                 return;
             }
 
-            // Direct sources response (server returned sources immediately).
+            // Direct sources response (refresh_token path).
             drawTable(table, data);
         });
+
     </script>
 
     <button id="gopro">GoPro</button>
