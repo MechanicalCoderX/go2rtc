@@ -29,13 +29,13 @@ func Dial(rawURL string) (core.Producer, error) {
 	}
 
 	query := u.Query()
-	cliendID := query.Get("client_id")
-	cliendSecret := query.Get("client_secret")
+	clientID := query.Get("client_id")
+	clientSecret := query.Get("client_secret")
 	refreshToken := query.Get("refresh_token")
 	projectID := query.Get("project_id")
 	deviceID := query.Get("device_id")
 
-	if cliendID == "" || cliendSecret == "" || refreshToken == "" || projectID == "" || deviceID == "" {
+	if clientID == "" || clientSecret == "" || refreshToken == "" || projectID == "" || deviceID == "" {
 		return nil, errors.New("nest: wrong query")
 	}
 
@@ -46,7 +46,7 @@ func Dial(rawURL string) (core.Producer, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		nestAPI, err = NewAPI(cliendID, cliendSecret, refreshToken)
+		nestAPI, err = NewAPI(clientID, clientSecret, refreshToken)
 		if err == nil {
 			break
 		}
@@ -66,7 +66,7 @@ func Dial(rawURL string) (core.Producer, error) {
 		return rtspConn(nestAPI, rawURL, projectID, deviceID)
 	}
 
-	// Default to WEB_RTC for backwards compataiility
+	// Default to WEB_RTC for backwards compatibility
 	return rtcConn(nestAPI, rawURL, projectID, deviceID)
 }
 
