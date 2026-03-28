@@ -117,8 +117,6 @@ func apiNest(w http.ResponseWriter, r *http.Request) {
 		"scope":         {"https://www.googleapis.com/auth/sdm.service"},
 		"client_id":     {clientID},
 		"state":         {state},
-		"device_id":     {state}, // required by nestservices.google.com for private-IP origins
-		"device_name":   {"go2rtc"},
 	}
 	authURL := fmt.Sprintf(nestAuthBase, projectID) + "?" + params.Encode()
 
