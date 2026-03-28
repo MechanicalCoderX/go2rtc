@@ -21,7 +21,6 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v3"
 )
 
 // streamOverride holds optional per-device ONVIF metadata from go2rtc.yaml:
@@ -36,61 +35,29 @@ import (
 //	      bitrate: 4096             # kbps
 //	      has_audio: true           # applies to both main and sub stream profiles
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
-//	      substream:
-//	        # stream: "my_camera_sub"  # optional: go2rtc stream name; defaults to "my_camera_sub"
-//	        resolution: "640x360"
-//	        fps: 15
-//	        bitrate: 512
+//	      substream: true              # enables sub-stream profile; go2rtc stream name defaults to "{device}_sub"
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
 // each with a unique MAC address derived from the stream name.
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
-type substreamOverride struct {
-	// present is set by UnmarshalYAML whenever the substream: key appears in
-	// the YAML config, even as a bare null (substream:). Absence of the key
-	// leaves it false so we can distinguish "not configured" from "all defaults".
-	present    bool
-	// Stream is the go2rtc stream name for the sub stream. If empty, defaults
-	// to the parent device name with "_sub" appended (e.g. "my_camera_sub").
-	Stream     string `yaml:"stream"`
+type streamOverride struct {
+	Model      string `yaml:"model"`
 	Resolution string `yaml:"resolution"`
 	FPS        int    `yaml:"fps"`
 	Bitrate    int    `yaml:"bitrate"`
-	// hasAudio is not a YAML field; it is inherited from the parent device's
-	// has_audio: setting at startup so that both profiles share the same value.
-	hasAudio bool
-}
-
-// UnmarshalYAML implements yaml.Unmarshaler so that a bare "substream:" null
-// entry is treated as "substream present with all defaults" rather than absent.
-func (s *substreamOverride) UnmarshalYAML(value *yaml.Node) error {
-	s.present = true
-	if value.Tag == "!!null" {
-		return nil
-	}
-	type plain substreamOverride // avoid infinite recursion
-	return value.Decode((*plain)(s))
-}
-
-type streamOverride struct {
-	Model      string            `yaml:"model"`
-	Resolution string            `yaml:"resolution"`
-	FPS        int               `yaml:"fps"`
-	Bitrate    int               `yaml:"bitrate"`
-	HasAudio   bool              `yaml:"has_audio"`
-	IP         string            `yaml:"ip"`
-	Substream  substreamOverride `yaml:"substream"` // value type; presence tracked by .present
+	HasAudio   bool   `yaml:"has_audio"`
+	IP         string `yaml:"ip"`
+	// Substream must be explicitly set to true to enable sub-stream advertisement.
+	// Any other value (false, absent, null) disables the sub-stream.
+	// The sub-stream go2rtc name defaults to "{device}_sub".
+	Substream bool `yaml:"substream"`
 }
 
 var streamOverrides map[string]streamOverride
 
-// subOverrides maps resolved go2rtc sub-stream names → their override config.
-// Built at startup; used by buildMeta and streamsForDevice.
-var subOverrides map[string]*substreamOverride
-
 // subStreamNames maps main device stream name → resolved sub-stream name.
-// Built at startup from substream: config (defaulting to "{main}_sub").
+// Built at startup from substream: true config (defaulting to "{main}_sub").
 var subStreamNames map[string]string
 
 // subParentNames maps resolved sub-stream name → main device stream name.
@@ -112,21 +79,13 @@ func Init() {
 	onvifPort = cfg.Mod.Port
 
 	// Build sub-stream lookup tables.
-	subOverrides = make(map[string]*substreamOverride)
 	subStreamNames = make(map[string]string)
 	subParentNames = make(map[string]string)
 	for mainName, ov := range streamOverrides {
-		if !ov.Substream.present {
+		if !ov.Substream {
 			continue
 		}
-		subName := ov.Substream.Stream
-		if subName == "" {
-			subName = mainName + "_sub" // convention: omitting stream: defaults to "{main}_sub"
-		}
-		sub := ov.Substream // copy so we can set the unexported fields
-		sub.Stream = subName
-		sub.hasAudio = ov.HasAudio // inherit device-level audio flag
-		subOverrides[subName] = &sub
+		subName := mainName + "_sub"
 		subStreamNames[mainName] = subName
 		subParentNames[subName] = mainName
 	}
@@ -395,20 +354,9 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if ov.HasAudio {
 			meta.HasAudio = true
 		}
-	} else if subOv, ok := subOverrides[name]; ok {
-		// Apply sub-stream YAML overrides when this name is a configured sub stream.
-		if subOv.Resolution != "" {
-			if w, h := parseResolution(subOv.Resolution); w > 0 {
-				meta.Width, meta.Height = w, h
-			}
-		}
-		if subOv.FPS > 0 {
-			meta.FPS = subOv.FPS
-		}
-		if subOv.Bitrate > 0 {
-			meta.Bitrate = subOv.Bitrate
-		}
-		if subOv.hasAudio {
+	} else if mainName, ok := subParentNames[name]; ok {
+		// Sub-stream inherits has_audio from the parent device.
+		if mainOv, exists := streamOverrides[mainName]; exists && mainOv.HasAudio {
 			meta.HasAudio = true
 		}
 	}
@@ -471,7 +419,7 @@ func profileStream(token, mainName string) string {
 	if token == mainName {
 		return mainName
 	}
-	if _, ok := subOverrides[token]; ok {
+	if _, ok := subParentNames[token]; ok {
 		return token
 	}
 	return mainName
