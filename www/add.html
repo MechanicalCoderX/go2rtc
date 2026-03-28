@@ -214,15 +214,15 @@
             </small>
             <button type="submit">Login with Google</button>
         </form>
-        <!-- Paste fallback: shown automatically when the loopback redirect can't reach this
-             server (browser is on a different machine from go2rtc). After authenticating,
-             the popup will show a connection error — copy the full URL from its address bar. -->
         <div id="nest-paste-section" style="display:none">
-            <small>
-                Your browser couldn't reach go2rtc via <code>127.0.0.1</code> — that's expected
-                when your browser and go2rtc are on different machines. Copy the full URL from the
-                popup's address bar (it contains <code>?code=…</code>) and paste it below.
-            </small>
+            <div style="background:#fff3cd;border:1px solid #e6ac00;border-radius:4px;padding:8px 12px;font-size:0.9em">
+                ⚠️ <strong>If the popup shows "page cannot be displayed"</strong> — copy the full
+                URL from the popup's address bar <strong>before closing the popup</strong>, paste
+                it below, then click Submit.<br>
+                <small style="color:#666">This only happens when your browser and go2rtc are on
+                different machines. If you're on the same machine, this panel will disappear
+                automatically once login completes.</small>
+            </div>
             <input type="text" id="nest-paste-url"
                    placeholder="Paste full redirect URL (http://127.0.0.1:…?code=…&state=…)" size="60">
             <button type="button" id="nest-paste-submit">Submit code</button>
@@ -309,7 +309,8 @@
         }
 
         function nestPollState(state) {
-            const table = document.getElementById('nest-table');
+            const table       = document.getElementById('nest-table');
+            const pasteSection = document.getElementById('nest-paste-section');
             const poll = setInterval(async () => {
                 const sr = await fetch(
                     new URL('api/nest/status?state=' + state, location.href),
@@ -317,6 +318,7 @@
                 );
                 if (sr.status === 204) return;
                 clearInterval(poll);
+                pasteSection.style.display = 'none';
                 if (!sr.ok) {
                     table.innerText = await sr.text();
                 } else {
@@ -411,29 +413,22 @@
                 const popup = window.open(data.authorize_url, 'nest_auth', 'width=520,height=640');
                 table.innerText = 'Waiting for Google login…';
 
+                // Show the paste panel immediately so the warning is visible before
+                // the user has a chance to close the popup on seeing a connection error.
+                // nestPollState hides it automatically once results arrive (same-machine).
+                pasteSection.style.display = '';
+
                 const poll = nestPollState(data.state);
 
-                // After 5 s show the paste section proactively — if the browser can't
-                // reach go2rtc at 127.0.0.1 (different machine) the popup stays open
-                // showing the connection-error URL, so the user can copy it while the
-                // paste section is already visible in the main window.
-                const pasteTimer = setTimeout(() => {
-                    if (table.innerText === 'Waiting for Google login…') {
-                        pasteSection.style.display = '';
-                    }
-                }, 5000);
-
                 // Watch for popup close.
-                // If go2rtc handled the callback directly (local machine), the poll
-                // will have already updated the table before the popup closes, so
-                // table.innerText won't be 'Waiting…' and we leave it alone.
+                // If go2rtc handled the callback directly (local machine), nestPollState
+                // will have already hidden the paste panel and updated the table.
+                // If the popup was closed before the URL was copied, update the prompt.
                 const guard = setInterval(() => {
                     if (popup && popup.closed) {
                         clearInterval(guard);
                         clearInterval(poll);
-                        clearTimeout(pasteTimer);
                         if (table.innerText === 'Waiting for Google login…') {
-                            pasteSection.style.display = '';
                             table.innerText = 'If you authenticated, paste the redirect URL above. Otherwise try again.';
                         }
                     }
