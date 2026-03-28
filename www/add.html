@@ -206,11 +206,24 @@
             <input type="text" name="project_id" placeholder="project_id" required>
             <input type="text" name="redirect_uri" id="nest-redirect-uri" size="45"
                    title="Must be registered as an Authorized redirect URI in Google Cloud Console">
+            <small>Register the URL above as an <strong>Authorized redirect URI</strong> on your OAuth 2.0 client &rarr; <a id="nest-console-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console &#8599;</a></small>
             <button type="submit">Login with Google</button>
         </form>
         <table id="nest-table"></table>
     </div>
     <script>
+        function nestUpdateConsoleLink() {
+            const clientId = document.querySelector('#nest-form [name="client_id"]').value.trim();
+            const link = document.getElementById('nest-console-link');
+            const projectNum = clientId.split('-')[0];
+            // client_id starts with the numeric GCP project number; use it to deep-link.
+            if (/^\d+$/.test(projectNum)) {
+                link.href = 'https://console.cloud.google.com/apis/credentials?project=' + projectNum;
+            } else {
+                link.href = 'https://console.cloud.google.com/apis/credentials';
+            }
+        }
+
         document.getElementById('nest').addEventListener('click', async ev => {
             ev.target.nextElementSibling.style.display = 'grid';
             // Pre-populate redirect_uri from the browser's own origin — correct
@@ -219,7 +232,10 @@
             if (!field.value) {
                 field.value = location.origin + '/api/nest/callback';
             }
+            nestUpdateConsoleLink();
         });
+
+        document.querySelector('#nest-form [name="client_id"]').addEventListener('input', nestUpdateConsoleLink);
 
         document.getElementById('nest-form').addEventListener('submit', async ev => {
             ev.preventDefault();
