@@ -93,6 +93,10 @@ var subOverrides map[string]*substreamOverride
 // Built at startup from substream: config (defaulting to "{main}_sub").
 var subStreamNames map[string]string
 
+// subParentNames maps resolved sub-stream name → main device stream name.
+// Used by buildMeta to source "half of main" fallback values.
+var subParentNames map[string]string
+
 var onvifPort int
 
 func Init() {
@@ -110,6 +114,7 @@ func Init() {
 	// Build sub-stream lookup tables.
 	subOverrides = make(map[string]*substreamOverride)
 	subStreamNames = make(map[string]string)
+	subParentNames = make(map[string]string)
 	for mainName, ov := range streamOverrides {
 		if !ov.Substream.present {
 			continue
@@ -123,6 +128,7 @@ func Init() {
 		sub.hasAudio = ov.HasAudio // inherit device-level audio flag
 		subOverrides[subName] = &sub
 		subStreamNames[mainName] = subName
+		subParentNames[subName] = mainName
 	}
 
 	log = app.GetLogger("onvif")
@@ -407,7 +413,37 @@ func buildMeta(name string) *onvif.StreamMeta {
 		}
 	}
 
+	// For sub-streams: fill any field still at zero by halving the main stream's
+	// value. If the main stream also has no value, half the StreamMeta hard-coded
+	// fallback is used (960×540, 15 fps, 4096 kbps).
+	if mainName, ok := subParentNames[name]; ok {
+		main := buildMeta(mainName)
+		if meta.Width == 0 {
+			meta.Width = halfOf(main.Width, 1920)
+		}
+		if meta.Height == 0 {
+			meta.Height = halfOf(main.Height, 1080)
+		}
+		if meta.FPS == 0 {
+			meta.FPS = max(1, halfOf(main.FPS, 30))
+		}
+		if meta.Bitrate == 0 {
+			meta.Bitrate = halfOf(main.Bitrate, 8192)
+		}
+		if meta.Video == "" {
+			meta.Video = main.Video
+		}
+	}
+
 	return meta
+}
+
+// halfOf returns v/2 when v > 0, otherwise returns fallback/2.
+func halfOf(v, fallback int) int {
+	if v > 0 {
+		return v / 2
+	}
+	return fallback / 2
 }
 
 // buildMetas returns a name→meta map for a slice of stream names.
