@@ -336,27 +336,23 @@
 
                 const poll = nestPollState(data.state);
 
-                // Watch for popup close (user cancelled).
+                // Watch for popup close.
+                // If go2rtc handled the callback directly (local machine), the poll
+                // will have already updated the table before the popup closes, so
+                // table.innerText won't be 'Waiting…' and we leave it alone.
+                // If the popup closed because 127.0.0.1 couldn't reach this server
+                // (browser is on a different machine), show the paste fallback — the
+                // code is in the popup's address bar.
                 const guard = setInterval(() => {
                     if (popup && popup.closed) {
                         clearInterval(guard);
                         clearInterval(poll);
                         if (table.innerText === 'Waiting for Google login…') {
-                            table.innerText = 'Login cancelled.';
+                            pasteSection.style.display = '';
+                            table.innerText = 'If you authenticated, paste the redirect URL above. Otherwise try again.';
                         }
                     }
                 }, 500);
-
-                // After 20 s with no result, the loopback redirect couldn't reach this server
-                // (browser is remote). Show the paste fallback so the user can copy the code
-                // from the popup's address bar.
-                setTimeout(() => {
-                    if (table.innerText !== 'Waiting for Google login…') return;
-                    clearInterval(guard);
-                    clearInterval(poll);
-                    pasteSection.style.display = '';
-                    table.innerText = 'See instructions above.';
-                }, 20000);
 
                 return;
             }
