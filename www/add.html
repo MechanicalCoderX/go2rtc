@@ -259,6 +259,55 @@
 
         document.querySelector('#nest-form [name="client_id"]').addEventListener('input', nestUpdateConsoleLink);
 
+        // Renders Nest device results with an editable name and ADD button per row.
+        function drawNestTable(table, data) {
+            table.innerHTML = '<thead><tr><th></th><th>name</th><th>url</th></tr></thead><tbody></tbody>';
+            const tbody = table.querySelector('tbody');
+            data.sources.forEach(s => {
+                const tr = document.createElement('tr');
+
+                const addTd = document.createElement('td');
+                const addBtn = document.createElement('button');
+                addBtn.type = 'button';
+                addBtn.textContent = 'ADD';
+                addBtn.style.cssText = 'padding:2px 8px;cursor:pointer';
+                addTd.appendChild(addBtn);
+                tr.appendChild(addTd);
+
+                const nameTd = document.createElement('td');
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.value = s.name || '';
+                nameInput.style.width = '180px';
+                nameTd.appendChild(nameInput);
+                tr.appendChild(nameTd);
+
+                const urlTd = document.createElement('td');
+                urlTd.style.cssText = 'word-break:break-word;white-space:normal;font-size:0.85em';
+                urlTd.textContent = s.url;
+                tr.appendChild(urlTd);
+
+                addBtn.addEventListener('click', async () => {
+                    const name = nameInput.value.trim().toLowerCase().replace(/\s+/g, '_');
+                    if (!name) { addBtn.textContent = 'Name?'; return; }
+                    nameInput.value = name;
+                    const u = new URL('api/streams', location.href);
+                    u.searchParams.set('name', name);
+                    u.searchParams.set('src', s.url);
+                    const r = await fetch(u, {method: 'PUT', cache: 'no-cache'});
+                    if (r.ok) {
+                        addBtn.textContent = '✓ Added';
+                        addBtn.disabled = true;
+                    } else {
+                        addBtn.textContent = 'Error';
+                        console.error(await r.text());
+                    }
+                });
+
+                tbody.appendChild(tr);
+            });
+        }
+
         function nestPollState(state) {
             const table = document.getElementById('nest-table');
             const poll = setInterval(async () => {
@@ -271,7 +320,7 @@
                 if (!sr.ok) {
                     table.innerText = await sr.text();
                 } else {
-                    drawTable(table, await sr.json());
+                    drawNestTable(table, await sr.json());
                 }
             }, 500);
             return poll;
@@ -303,7 +352,7 @@
                 {cache: 'no-cache'}
             );
             if (preCheck.status === 200) {
-                drawTable(table, await preCheck.json());
+                drawNestTable(table, await preCheck.json());
                 return;
             }
 
@@ -364,17 +413,25 @@
 
                 const poll = nestPollState(data.state);
 
+                // After 5 s show the paste section proactively — if the browser can't
+                // reach go2rtc at 127.0.0.1 (different machine) the popup stays open
+                // showing the connection-error URL, so the user can copy it while the
+                // paste section is already visible in the main window.
+                const pasteTimer = setTimeout(() => {
+                    if (table.innerText === 'Waiting for Google login…') {
+                        pasteSection.style.display = '';
+                    }
+                }, 5000);
+
                 // Watch for popup close.
                 // If go2rtc handled the callback directly (local machine), the poll
                 // will have already updated the table before the popup closes, so
                 // table.innerText won't be 'Waiting…' and we leave it alone.
-                // If the popup closed because 127.0.0.1 couldn't reach this server
-                // (browser is on a different machine), show the paste fallback — the
-                // code is in the popup's address bar.
                 const guard = setInterval(() => {
                     if (popup && popup.closed) {
                         clearInterval(guard);
                         clearInterval(poll);
+                        clearTimeout(pasteTimer);
                         if (table.innerText === 'Waiting for Google login…') {
                             pasteSection.style.display = '';
                             table.innerText = 'If you authenticated, paste the redirect URL above. Otherwise try again.';
@@ -386,7 +443,7 @@
             }
 
             // Direct sources response (refresh_token path).
-            drawTable(table, data);
+            drawNestTable(table, data);
         });
 
     </script>
