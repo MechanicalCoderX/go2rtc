@@ -21,7 +21,35 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 )
+
+// substreamConfig holds optional per-substream ONVIF metadata overrides.
+// The sub-stream is enabled whenever the substream: key is present in the YAML,
+// regardless of whether any nested fields are set.
+// Any unset field falls back to half the parent stream's value.
+//
+//	substream:                 # enables sub-stream; all fields optional
+//	  resolution: "640x360"   # overrides the half-of-main default
+//	  fps: 10
+//	  bitrate: 1024            # kbps
+type substreamConfig struct {
+	present    bool   // true when the substream: key appeared in YAML
+	Resolution string `yaml:"resolution"`
+	FPS        int    `yaml:"fps"`
+	Bitrate    int    `yaml:"bitrate"`
+}
+
+// UnmarshalYAML marks the sub-stream as present whenever the key exists in the
+// YAML document, even if its value is null or an empty mapping.
+func (s *substreamConfig) UnmarshalYAML(value *yaml.Node) error {
+	s.present = true
+	if value.Tag == "!!null" {
+		return nil
+	}
+	type plain substreamConfig
+	return value.Decode((*plain)(s))
+}
 
 // streamOverride holds optional per-device ONVIF metadata from go2rtc.yaml:
 //
@@ -35,29 +63,29 @@ import (
 //	      bitrate: 4096             # kbps
 //	      has_audio: true           # applies to both main and sub stream profiles
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
-//	      substream: true              # enables sub-stream profile; go2rtc stream name defaults to "{device}_sub"
+//	      substream:                # enables sub-stream; go2rtc stream name defaults to "{device}_sub"
+//	        resolution: "640x360"   # optional overrides; omit any field to use half the main value
+//	        fps: 10
+//	        bitrate: 1024
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
 // each with a unique MAC address derived from the stream name.
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
 type streamOverride struct {
-	Model      string `yaml:"model"`
-	Resolution string `yaml:"resolution"`
-	FPS        int    `yaml:"fps"`
-	Bitrate    int    `yaml:"bitrate"`
-	HasAudio   bool   `yaml:"has_audio"`
-	IP         string `yaml:"ip"`
-	// Substream must be explicitly set to true to enable sub-stream advertisement.
-	// Any other value (false, absent, null) disables the sub-stream.
-	// The sub-stream go2rtc name defaults to "{device}_sub".
-	Substream bool `yaml:"substream"`
+	Model      string          `yaml:"model"`
+	Resolution string          `yaml:"resolution"`
+	FPS        int             `yaml:"fps"`
+	Bitrate    int             `yaml:"bitrate"`
+	HasAudio   bool            `yaml:"has_audio"`
+	IP         string          `yaml:"ip"`
+	Substream  substreamConfig `yaml:"substream"`
 }
 
 var streamOverrides map[string]streamOverride
 
 // subStreamNames maps main device stream name → resolved sub-stream name.
-// Built at startup from substream: true config (defaulting to "{main}_sub").
+// Built at startup from devices that have a substream: key (defaulting to "{main}_sub").
 var subStreamNames map[string]string
 
 // subParentNames maps resolved sub-stream name → main device stream name.
@@ -82,7 +110,7 @@ func Init() {
 	subStreamNames = make(map[string]string)
 	subParentNames = make(map[string]string)
 	for mainName, ov := range streamOverrides {
-		if !ov.Substream {
+		if !ov.Substream.present {
 			continue
 		}
 		subName := mainName + "_sub"
@@ -361,10 +389,25 @@ func buildMeta(name string) *onvif.StreamMeta {
 		}
 	}
 
-	// For sub-streams: fill any field still at zero by halving the main stream's
-	// value. If the main stream also has no value, half the StreamMeta hard-coded
-	// fallback is used (960×540, 15 fps, 4096 kbps).
+	// For sub-streams: apply explicit substream: overrides from the parent device
+	// config first, then fall back to halving the main stream's value for any
+	// field still at zero. If the main stream also has no value, half the
+	// StreamMeta hard-coded fallback is used (960×540, 15 fps, 4096 kbps).
 	if mainName, ok := subParentNames[name]; ok {
+		if mainOv, exists := streamOverrides[mainName]; exists {
+			sub := mainOv.Substream
+			if sub.Resolution != "" {
+				if w, h := parseResolution(sub.Resolution); w > 0 {
+					meta.Width, meta.Height = w, h
+				}
+			}
+			if sub.FPS > 0 {
+				meta.FPS = sub.FPS
+			}
+			if sub.Bitrate > 0 {
+				meta.Bitrate = sub.Bitrate
+			}
+		}
 		main := buildMeta(mainName)
 		if meta.Width == 0 {
 			meta.Width = halfOf(main.Width, 1920)
