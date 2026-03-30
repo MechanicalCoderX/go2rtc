@@ -63,6 +63,9 @@ func (s *substreamConfig) UnmarshalYAML(value *yaml.Node) error {
 //	      bitrate: 4096             # kbps
 //	      has_audio: true           # applies to both main and sub stream profiles
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
+//	      has_audio: true           # nil=auto-detect, true=force-on, false=force-off
+//	      audio_codec: "AAC"        # "AAC" or "G711"; overrides live-detected codec name
+//	      audio_sample_rate: 22050  # Hz; overrides live-detected sample rate
 //	      substream:                # enables sub-stream; go2rtc stream name defaults to "{device}_sub"
 //	        resolution: "640x360"   # optional overrides; omit any field to use half the main value
 //	        fps: 10
@@ -73,13 +76,15 @@ func (s *substreamConfig) UnmarshalYAML(value *yaml.Node) error {
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
 type streamOverride struct {
-	Model      string          `yaml:"model"`
-	Resolution string          `yaml:"resolution"`
-	FPS        int             `yaml:"fps"`
-	Bitrate    int             `yaml:"bitrate"`
-	HasAudio   *bool           `yaml:"has_audio"`
-	IP         string          `yaml:"ip"`
-	Substream  substreamConfig `yaml:"substream"`
+	Model           string          `yaml:"model"`
+	Resolution      string          `yaml:"resolution"`
+	FPS             int             `yaml:"fps"`
+	Bitrate         int             `yaml:"bitrate"`
+	HasAudio        *bool           `yaml:"has_audio"`
+	AudioCodec      string          `yaml:"audio_codec"`       // "AAC" or "G711"; overrides live-detected codec
+	AudioSampleRate int             `yaml:"audio_sample_rate"` // Hz; overrides live-detected sample rate
+	IP              string          `yaml:"ip"`
+	Substream       substreamConfig `yaml:"substream"`
 }
 
 var streamOverrides map[string]streamOverride
@@ -380,6 +385,12 @@ func buildMeta(name string) *onvif.StreamMeta {
 		// Omitting has_audio entirely leaves the live-detected value in place.
 		if ov.HasAudio != nil {
 			meta.HasAudio = *ov.HasAudio
+		}
+		if ov.AudioCodec != "" {
+			meta.Audio = ov.AudioCodec
+		}
+		if ov.AudioSampleRate > 0 {
+			meta.AudioSampleRate = ov.AudioSampleRate
 		}
 	} else if mainName, ok := subParentNames[name]; ok {
 		// Sub-stream inherits has_audio override from the parent device.
