@@ -77,7 +77,7 @@ type streamOverride struct {
 	Resolution string          `yaml:"resolution"`
 	FPS        int             `yaml:"fps"`
 	Bitrate    int             `yaml:"bitrate"`
-	HasAudio   bool            `yaml:"has_audio"`
+	HasAudio   *bool           `yaml:"has_audio"`
 	IP         string          `yaml:"ip"`
 	Substream  substreamConfig `yaml:"substream"`
 }
@@ -376,16 +376,15 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if ov.Model != "" {
 			meta.Model = ov.Model
 		}
-		// has_audio: true forces audio advertisement even when the stream is not yet
-		// connected — important for NVRs like UniFi Protect that interrogate during
-		// adoption before the RTSP source has had a chance to connect.
-		if ov.HasAudio {
-			meta.HasAudio = true
+		// has_audio: true/false overrides live auto-detection.
+		// Omitting has_audio entirely leaves the live-detected value in place.
+		if ov.HasAudio != nil {
+			meta.HasAudio = *ov.HasAudio
 		}
 	} else if mainName, ok := subParentNames[name]; ok {
-		// Sub-stream inherits has_audio from the parent device.
-		if mainOv, exists := streamOverrides[mainName]; exists && mainOv.HasAudio {
-			meta.HasAudio = true
+		// Sub-stream inherits has_audio override from the parent device.
+		if mainOv, exists := streamOverrides[mainName]; exists && mainOv.HasAudio != nil {
+			meta.HasAudio = *mainOv.HasAudio
 		}
 	}
 
