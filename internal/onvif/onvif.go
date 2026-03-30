@@ -65,7 +65,8 @@ func (s *substreamConfig) UnmarshalYAML(value *yaml.Node) error {
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
 //	      has_audio: true           # nil=auto-detect, true=force-on, false=force-off
 //	      audio_codec: "AAC"        # "AAC" or "G711"; overrides live-detected codec name
-//	      audio_sample_rate: 22050  # Hz; overrides live-detected sample rate
+//	      audio_sample_rate: 16000  # Hz; overrides live-detected sample rate
+//	      audio_channels: 1         # channel count; overrides live-detected channels
 //	      substream:                # enables sub-stream; go2rtc stream name defaults to "{device}_sub"
 //	        resolution: "640x360"   # optional overrides; omit any field to use half the main value
 //	        fps: 10
@@ -83,6 +84,7 @@ type streamOverride struct {
 	HasAudio        *bool           `yaml:"has_audio"`
 	AudioCodec      string          `yaml:"audio_codec"`       // "AAC" or "G711"; overrides live-detected codec
 	AudioSampleRate int             `yaml:"audio_sample_rate"` // Hz; overrides live-detected sample rate
+	AudioChannels   int             `yaml:"audio_channels"`    // channel count; overrides live-detected channels
 	IP              string          `yaml:"ip"`
 	Substream       substreamConfig `yaml:"substream"`
 }
@@ -396,6 +398,9 @@ func buildMeta(name string) *onvif.StreamMeta {
 		}
 		if ov.AudioSampleRate > 0 {
 			meta.AudioSampleRate = ov.AudioSampleRate
+		}
+		if ov.AudioChannels > 0 {
+			meta.AudioChannels = ov.AudioChannels
 		}
 	} else if mainName, ok := subParentNames[name]; ok {
 		// Sub-stream inherits has_audio override from the parent device.
