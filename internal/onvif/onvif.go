@@ -353,18 +353,11 @@ func buildMeta(name string) *onvif.StreamMeta {
 						meta.Audio = "G711"
 						meta.AudioSampleRate = 8000
 						meta.AudioChannels = 1
-					case core.CodecAAC:
+					case core.CodecAAC, core.CodecOpus:
+						// ONVIF AudioEncoding enum only defines G711/G726/AAC; Opus must
+						// map to AAC. Sample rate and channel count are still reported
+						// accurately from the live codec.
 						meta.Audio = "AAC"
-						if codec.ClockRate > 0 {
-							meta.AudioSampleRate = int(codec.ClockRate)
-						}
-						if codec.Channels > 0 {
-							meta.AudioChannels = int(codec.Channels)
-						}
-					case core.CodecOpus:
-						// Advertise Opus directly; Protect lists "opus" in featureFlags.audioCodecs
-						// and the AI Port needs the correct encoding to set up its decoder.
-						meta.Audio = "Opus"
 						if codec.ClockRate > 0 {
 							meta.AudioSampleRate = int(codec.ClockRate)
 						}
