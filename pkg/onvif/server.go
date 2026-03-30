@@ -53,6 +53,7 @@ type StreamMeta struct {
 	HasAudio        bool   // whether the stream carries an audio track
 	Audio           string // ONVIF audio encoding ("G711" or "AAC"); "" → "AAC"
 	AudioSampleRate int    // audio sample rate in Hz; 0 → 22050 (AAC) or 8000 (G711)
+	AudioChannels   int    // audio channel count; 0 → 1 (mono)
 	Name            string // friendly display name shown in ONVIF clients; empty → stream key
 	Model           string // device model name (e.g. camera model); shown in Protect/ONVIF clients
 	Version         string // device version string; shown as "device version" in Protect
@@ -119,6 +120,13 @@ func (m *StreamMeta) audioSampleRate() int {
 		return 8000
 	}
 	return 22050
+}
+
+func (m *StreamMeta) audioChannels() int {
+	if m != nil && m.AudioChannels > 0 {
+		return m.AudioChannels
+	}
+	return 1
 }
 
 func GetRequestAction(b []byte) string {
@@ -354,8 +362,8 @@ func GetAudioSourcesResponse(names []string, metas map[string]*StreamMeta) []byt
 	for _, name := range names {
 		if m := metas[name]; m != nil && m.HasAudio {
 			e.Appendf(`<trt:AudioSources token="%s">
-	<tt:Channels>1</tt:Channels>
-</trt:AudioSources>`, name)
+	<tt:Channels>%d</tt:Channels>
+</trt:AudioSources>`, name, m.audioChannels())
 		}
 	}
 	e.Append(`</trt:GetAudioSourcesResponse>`)

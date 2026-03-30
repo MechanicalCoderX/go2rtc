@@ -352,12 +352,17 @@ func buildMeta(name string) *onvif.StreamMeta {
 					case core.CodecPCMA, core.CodecPCMU:
 						meta.Audio = "G711"
 						meta.AudioSampleRate = 8000
+						meta.AudioChannels = 1
 					case core.CodecAAC, core.CodecOpus:
 						// ONVIF AudioEncoding only supports G711/G726/AAC; map Opus -> AAC
-						// and preserve the actual clock rate so clients SDP-negotiate correctly.
+						// and preserve the actual clock rate and channel count so clients
+						// SDP-negotiate correctly.
 						meta.Audio = "AAC"
 						if codec.ClockRate > 0 {
 							meta.AudioSampleRate = int(codec.ClockRate)
+						}
+						if codec.Channels > 0 {
+							meta.AudioChannels = int(codec.Channels)
 						}
 					}
 				}
