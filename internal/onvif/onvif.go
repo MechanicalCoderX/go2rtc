@@ -21,35 +21,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/AlexxIT/go2rtc/pkg/onvif"
 	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v3"
 )
-
-// substreamConfig holds optional per-substream ONVIF metadata overrides.
-// The sub-stream is enabled whenever the substream: key is present in the YAML,
-// regardless of whether any nested fields are set.
-// Any unset field falls back to half the parent stream's value.
-//
-//	substream:                 # enables sub-stream; all fields optional
-//	  resolution: "640x360"   # overrides the half-of-main default
-//	  fps: 10
-//	  bitrate: 1024            # kbps
-type substreamConfig struct {
-	present    bool   // true when the substream: key appeared in YAML
-	Resolution string `yaml:"resolution"`
-	FPS        int    `yaml:"fps"`
-	Bitrate    int    `yaml:"bitrate"`
-}
-
-// UnmarshalYAML marks the sub-stream as present whenever the key exists in the
-// YAML document, even if its value is null or an empty mapping.
-func (s *substreamConfig) UnmarshalYAML(value *yaml.Node) error {
-	s.present = true
-	if value.Tag == "!!null" {
-		return nil
-	}
-	type plain substreamConfig
-	return value.Decode((*plain)(s))
-}
 
 // streamOverride holds optional per-device ONVIF metadata from go2rtc.yaml:
 //
@@ -61,43 +33,27 @@ func (s *substreamConfig) UnmarshalYAML(value *yaml.Node) error {
 //	      resolution: "1920x1080"   # WxH advertised to clients
 //	      fps: 30
 //	      bitrate: 4096             # kbps
-//	      has_audio: true           # applies to both main and sub stream profiles
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
-//	      has_audio: true           # nil=auto-detect, true=force-on, false=force-off
 //	      audio_codec: "AAC"        # "AAC" or "G711"; overrides live-detected codec name
 //	      audio_sample_rate: 16000  # Hz; overrides live-detected sample rate
 //	      audio_channels: 1         # channel count; overrides live-detected channels
-//	      substream:                # enables sub-stream; go2rtc stream name defaults to "{device}_sub"
-//	        resolution: "640x360"   # optional overrides; omit any field to use half the main value
-//	        fps: 10
-//	        bitrate: 1024
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
 // each with a unique MAC address derived from the stream name.
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
 type streamOverride struct {
-	Model           string          `yaml:"model"`
-	Resolution      string          `yaml:"resolution"`
-	FPS             int             `yaml:"fps"`
-	Bitrate         int             `yaml:"bitrate"`
-	HasAudio        *bool           `yaml:"has_audio"`
-	AudioCodec      string          `yaml:"audio_codec"`       // "AAC" or "G711"; overrides live-detected codec
-	AudioSampleRate int             `yaml:"audio_sample_rate"` // Hz; overrides live-detected sample rate
-	AudioChannels   int             `yaml:"audio_channels"`    // channel count; overrides live-detected channels
-	IP              string          `yaml:"ip"`
-	Substream       substreamConfig `yaml:"substream"`
+	Model           string `yaml:"model"`
+	Resolution      string `yaml:"resolution"`
+	FPS             int    `yaml:"fps"`
+	Bitrate         int    `yaml:"bitrate"`
+	AudioCodec      string `yaml:"audio_codec"`       // "AAC" or "G711"; overrides live-detected codec
+	AudioSampleRate int    `yaml:"audio_sample_rate"` // Hz; overrides live-detected sample rate
+	AudioChannels   int    `yaml:"audio_channels"`    // channel count; overrides live-detected channels
+	IP              string `yaml:"ip"`
 }
 
 var streamOverrides map[string]streamOverride
-
-// subStreamNames maps main device stream name → resolved sub-stream name.
-// Built at startup from devices that have a substream: key (defaulting to "{main}_sub").
-var subStreamNames map[string]string
-
-// subParentNames maps resolved sub-stream name → main device stream name.
-// Used by buildMeta to source "half of main" fallback values.
-var subParentNames map[string]string
 
 var onvifPort int
 
@@ -112,18 +68,6 @@ func Init() {
 	app.LoadConfig(&cfg)
 	streamOverrides = cfg.Mod.Devices
 	onvifPort = cfg.Mod.Port
-
-	// Build sub-stream lookup tables.
-	subStreamNames = make(map[string]string)
-	subParentNames = make(map[string]string)
-	for mainName, ov := range streamOverrides {
-		if !ov.Substream.present {
-			continue
-		}
-		subName := mainName + "_sub"
-		subStreamNames[mainName] = subName
-		subParentNames[subName] = mainName
-	}
 
 	log = app.GetLogger("onvif")
 
@@ -388,11 +332,6 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if ov.Model != "" {
 			meta.Model = ov.Model
 		}
-		// has_audio: true/false overrides live auto-detection.
-		// Omitting has_audio entirely leaves the live-detected value in place.
-		if ov.HasAudio != nil {
-			meta.HasAudio = *ov.HasAudio
-		}
 		if ov.AudioCodec != "" {
 			meta.Audio = ov.AudioCodec
 		}
@@ -402,59 +341,9 @@ func buildMeta(name string) *onvif.StreamMeta {
 		if ov.AudioChannels > 0 {
 			meta.AudioChannels = ov.AudioChannels
 		}
-	} else if mainName, ok := subParentNames[name]; ok {
-		// Sub-stream inherits has_audio override from the parent device.
-		if mainOv, exists := streamOverrides[mainName]; exists && mainOv.HasAudio != nil {
-			meta.HasAudio = *mainOv.HasAudio
-		}
-	}
-
-	// For sub-streams: apply explicit substream: overrides from the parent device
-	// config first, then fall back to halving the main stream's value for any
-	// field still at zero. If the main stream also has no value, half the
-	// StreamMeta hard-coded fallback is used (960×540, 15 fps, 4096 kbps).
-	if mainName, ok := subParentNames[name]; ok {
-		if mainOv, exists := streamOverrides[mainName]; exists {
-			sub := mainOv.Substream
-			if sub.Resolution != "" {
-				if w, h := parseResolution(sub.Resolution); w > 0 {
-					meta.Width, meta.Height = w, h
-				}
-			}
-			if sub.FPS > 0 {
-				meta.FPS = sub.FPS
-			}
-			if sub.Bitrate > 0 {
-				meta.Bitrate = sub.Bitrate
-			}
-		}
-		main := buildMeta(mainName)
-		if meta.Width == 0 {
-			meta.Width = halfOf(main.Width, 1920)
-		}
-		if meta.Height == 0 {
-			meta.Height = halfOf(main.Height, 1080)
-		}
-		if meta.FPS == 0 {
-			meta.FPS = max(1, halfOf(main.FPS, 30))
-		}
-		if meta.Bitrate == 0 {
-			meta.Bitrate = halfOf(main.Bitrate, 8192)
-		}
-		if meta.Video == "" {
-			meta.Video = main.Video
-		}
 	}
 
 	return meta
-}
-
-// halfOf returns v/2 when v > 0, otherwise returns fallback/2.
-func halfOf(v, fallback int) int {
-	if v > 0 {
-		return v / 2
-	}
-	return fallback / 2
 }
 
 // buildMetas returns a name→meta map for a slice of stream names.
@@ -466,24 +355,15 @@ func buildMetas(names []string) map[string]*onvif.StreamMeta {
 	return metas
 }
 
-// streamsForDevice returns the ONVIF profile names for a device: always the
-// main stream, plus the sub stream name if one is configured.
+// streamsForDevice returns the ONVIF profile names for a device.
 func streamsForDevice(mainName string) []string {
-	if subName, ok := subStreamNames[mainName]; ok {
-		return []string{mainName, subName}
-	}
 	return []string{mainName}
 }
 
-// profileStream maps an ONVIF ProfileToken to the go2rtc stream name that
-// should be used for GetStreamUri / GetProfile. Falls back to mainName if the
-// token is unrecognised.
+// profileStream maps an ONVIF ProfileToken to the go2rtc stream name.
 func profileStream(token, mainName string) string {
 	if token == mainName {
 		return mainName
-	}
-	if _, ok := subParentNames[token]; ok {
-		return token
 	}
 	return mainName
 }
