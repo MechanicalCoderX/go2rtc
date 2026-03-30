@@ -113,11 +113,13 @@ func (m *StreamMeta) audio() string {
 }
 
 func (m *StreamMeta) audioSampleRate() int {
-	if m != nil && m.AudioSampleRate > 0 {
-		return m.AudioSampleRate
-	}
-	if m != nil && m.Audio == "G711" {
-		return 8000
+	if m != nil {
+		if m.AudioSampleRate > 0 {
+			return m.AudioSampleRate
+		}
+		if m.Audio == "G711" {
+			return 8000
+		}
 	}
 	return 22050
 }

@@ -147,86 +147,15 @@ func serveStreamDirect(w http.ResponseWriter, r *http.Request, stream string) {
 
 	log.Trace().Msgf("[onvif] server request stream=%s %s %s:\n%s", stream, r.Method, r.RequestURI, b)
 
-	names := streamsForDevice(stream)
-	meta := buildMeta(stream)
+	// r.Host is the dedicated stream IP:onvifPort; snapshot must use the main API port.
+	host, _, herr := net.SplitHostPort(r.Host)
+	if herr != nil {
+		host = r.Host
+	}
+	snapshotURI := fmt.Sprintf("http://%s:%d/api/frame.jpeg?src=%s", host, api.Port, stream)
 
-	var out []byte
-	switch operation {
-	case onvif.ServiceGetServiceCapabilities,
-		onvif.DeviceGetSystemDateAndTime,
-		onvif.DeviceSetSystemDateAndTime,
-		onvif.DeviceGetDiscoveryMode,
-		onvif.DeviceGetDNS,
-		onvif.DeviceGetHostname,
-		onvif.DeviceGetNetworkDefaultGateway,
-		onvif.DeviceGetNetworkProtocols,
-		onvif.DeviceGetNTP,
-		onvif.MediaGetVideoEncoderConfigurationOptions:
-		out = onvif.StaticResponse(operation)
-
-	case onvif.DeviceGetNetworkInterfaces:
-		out = onvif.GetNetworkInterfacesResponse(onvif.StreamMAC(stream))
-
-	case onvif.DeviceGetCapabilities:
-		out = onvif.GetCapabilitiesResponse(r.Host, stream)
-
-	case onvif.DeviceGetServices:
-		out = onvif.GetServicesResponse(r.Host, stream)
-
-	case onvif.DeviceGetDeviceInformation:
-		out = onvif.GetDeviceInformationResponse(meta, app.Version, onvif.StreamSerial(stream))
-
-	case onvif.DeviceGetScopes:
-		out = onvif.GetScopesResponse(meta)
-
-	case onvif.DeviceSystemReboot:
-		out = onvif.StaticResponse(operation)
-		time.AfterFunc(time.Second, func() { os.Exit(0) })
-
-	case onvif.MediaGetVideoSources:
-		out = onvif.GetVideoSourcesResponse(names, buildMetas(names))
-	case onvif.MediaGetProfiles:
-		out = onvif.GetProfilesResponse(names, buildMetas(names))
-	case onvif.MediaGetProfile:
-		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
-		out = onvif.GetProfileResponse(target, buildMeta(target))
-	case onvif.MediaGetVideoSourceConfigurations:
-		out = onvif.GetVideoSourceConfigurationsResponse(names, buildMetas(names))
-	case onvif.MediaGetVideoSourceConfiguration:
-		out = onvif.GetVideoSourceConfigurationResponse(stream, meta)
-	case onvif.MediaGetVideoEncoderConfigurations:
-		out = onvif.GetVideoEncoderConfigurationsResponse(names, buildMetas(names))
-	case onvif.MediaGetVideoEncoderConfiguration:
-		out = onvif.GetVideoEncoderConfigurationResponse(meta)
-	case onvif.MediaGetAudioSources:
-		out = onvif.GetAudioSourcesResponse(names, buildMetas(names))
-	case onvif.MediaGetAudioSourceConfigurations:
-		out = onvif.GetAudioSourceConfigurationsResponse(names, buildMetas(names))
-	case onvif.MediaGetAudioEncoderConfigurations:
-		out = onvif.GetAudioEncoderConfigurationsResponse(names, buildMetas(names))
-	case onvif.MediaGetAudioEncoderConfiguration:
-		out = onvif.GetAudioEncoderConfigurationResponse(meta)
-
-	case onvif.MediaGetStreamUri:
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = r.Host
-		}
-		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
-		uri := "rtsp://" + host + ":" + rtsp.Port + "/" + target
-		out = onvif.GetStreamUriResponse(uri)
-
-	case onvif.MediaGetSnapshotUri:
-		// r.Host is the dedicated stream IP:onvifPort; snapshot is on the main API port.
-		// Snapshots are only available for the main stream.
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = r.Host
-		}
-		uri := fmt.Sprintf("http://%s:%d/api/frame.jpeg?src=%s", host, api.Port, stream)
-		out = onvif.GetSnapshotUriResponse(uri)
-
-	default:
+	out := buildOnvifResponse(operation, r, stream, snapshotURI)
+	if out == nil {
 		http.Error(w, "unsupported operation", http.StatusBadRequest)
 		log.Warn().Msgf("[onvif] unsupported operation: %s", operation)
 		return
@@ -360,12 +289,86 @@ func streamsForDevice(mainName string) []string {
 	return []string{mainName}
 }
 
-// profileStream maps an ONVIF ProfileToken to the go2rtc stream name.
-func profileStream(token, mainName string) string {
-	if token == mainName {
-		return mainName
+// buildOnvifResponse constructs the SOAP response for a single ONVIF operation.
+// snapshotURI is pre-computed by the caller since it differs between the dedicated-IP
+// handler (must substitute the main API port) and the path-based handler (uses r.Host
+// as-is). Returns nil for unrecognised operations.
+func buildOnvifResponse(operation string, r *http.Request, stream, snapshotURI string) []byte {
+	names := streamsForDevice(stream)
+	meta := buildMeta(stream)
+
+	switch operation {
+	case onvif.ServiceGetServiceCapabilities,
+		onvif.DeviceGetSystemDateAndTime,
+		onvif.DeviceSetSystemDateAndTime,
+		onvif.DeviceGetDiscoveryMode,
+		onvif.DeviceGetDNS,
+		onvif.DeviceGetHostname,
+		onvif.DeviceGetNetworkDefaultGateway,
+		onvif.DeviceGetNetworkProtocols,
+		onvif.DeviceGetNTP,
+		onvif.MediaGetVideoEncoderConfigurationOptions:
+		return onvif.StaticResponse(operation)
+
+	case onvif.DeviceGetNetworkInterfaces:
+		// unique MAC per stream so NVRs treat each stream as a distinct device
+		return onvif.GetNetworkInterfacesResponse(onvif.StreamMAC(stream))
+
+	case onvif.DeviceGetCapabilities:
+		// Media section important for Hass
+		return onvif.GetCapabilitiesResponse(r.Host, stream)
+
+	case onvif.DeviceGetServices:
+		return onvif.GetServicesResponse(r.Host, stream)
+
+	case onvif.DeviceGetDeviceInformation:
+		// SerialNumber is unique per stream
+		return onvif.GetDeviceInformationResponse(meta, app.Version, onvif.StreamSerial(stream))
+
+	case onvif.DeviceGetScopes:
+		return onvif.GetScopesResponse(meta)
+
+	case onvif.DeviceSystemReboot:
+		time.AfterFunc(time.Second, func() { os.Exit(0) })
+		return onvif.StaticResponse(operation)
+
+	case onvif.MediaGetVideoSources:
+		return onvif.GetVideoSourcesResponse(names, buildMetas(names))
+	case onvif.MediaGetProfiles:
+		// H264 codec, width, height important for Hass
+		return onvif.GetProfilesResponse(names, buildMetas(names))
+	case onvif.MediaGetProfile:
+		return onvif.GetProfileResponse(stream, meta)
+	case onvif.MediaGetVideoSourceConfigurations:
+		// important for Happytime Onvif Client
+		return onvif.GetVideoSourceConfigurationsResponse(names, buildMetas(names))
+	case onvif.MediaGetVideoSourceConfiguration:
+		return onvif.GetVideoSourceConfigurationResponse(stream, meta)
+	case onvif.MediaGetVideoEncoderConfigurations:
+		return onvif.GetVideoEncoderConfigurationsResponse(names, buildMetas(names))
+	case onvif.MediaGetVideoEncoderConfiguration:
+		return onvif.GetVideoEncoderConfigurationResponse(meta)
+	case onvif.MediaGetAudioSources:
+		return onvif.GetAudioSourcesResponse(names, buildMetas(names))
+	case onvif.MediaGetAudioSourceConfigurations:
+		return onvif.GetAudioSourceConfigurationsResponse(names, buildMetas(names))
+	case onvif.MediaGetAudioEncoderConfigurations:
+		return onvif.GetAudioEncoderConfigurationsResponse(names, buildMetas(names))
+	case onvif.MediaGetAudioEncoderConfiguration:
+		return onvif.GetAudioEncoderConfigurationResponse(meta)
+
+	case onvif.MediaGetStreamUri:
+		host, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+		}
+		return onvif.GetStreamUriResponse(fmt.Sprintf("rtsp://%s:%s/%s", host, rtsp.Port, stream))
+
+	case onvif.MediaGetSnapshotUri:
+		return onvif.GetSnapshotUriResponse(snapshotURI)
 	}
-	return mainName
+
+	return nil
 }
 
 // resolutionFromH264 extracts width/height from the sprop-parameter-sets in an
@@ -439,108 +442,20 @@ func onvifDeviceService(w http.ResponseWriter, r *http.Request) {
 
 	log.Trace().Msgf("[onvif] server request stream=%s %s %s:\n%s", stream, r.Method, r.RequestURI, b)
 
-	names := streamsForDevice(stream)
-	meta := buildMeta(stream)
+	// r.Host is the main API host:port, so the snapshot URL needs no adjustment.
+	snapshotURI := "http://" + r.Host + "/api/frame.jpeg?src=" + stream
 
-	switch operation {
-	case onvif.ServiceGetServiceCapabilities, // important for Hass
-		onvif.DeviceGetSystemDateAndTime, // important for Hass
-		onvif.DeviceSetSystemDateAndTime, // return just OK
-		onvif.DeviceGetDiscoveryMode,
-		onvif.DeviceGetDNS,
-		onvif.DeviceGetHostname,
-		onvif.DeviceGetNetworkDefaultGateway,
-		onvif.DeviceGetNetworkProtocols,
-		onvif.DeviceGetNTP,
-		onvif.MediaGetVideoEncoderConfigurationOptions:
-		b = onvif.StaticResponse(operation)
-
-	case onvif.DeviceGetNetworkInterfaces:
-		// important for Hass; unique MAC per stream so NVRs treat each stream as a distinct device
-		b = onvif.GetNetworkInterfacesResponse(onvif.StreamMAC(stream))
-
-	case onvif.DeviceGetCapabilities:
-		// important for Hass: Media section
-		b = onvif.GetCapabilitiesResponse(r.Host, stream)
-
-	case onvif.DeviceGetServices:
-		b = onvif.GetServicesResponse(r.Host, stream)
-
-	case onvif.DeviceGetDeviceInformation:
-		// important for Hass: SerialNumber (unique per stream)
-		b = onvif.GetDeviceInformationResponse(meta, app.Version, onvif.StreamSerial(stream))
-
-	case onvif.DeviceGetScopes:
-		b = onvif.GetScopesResponse(meta)
-
-	case onvif.DeviceSystemReboot:
-		b = onvif.StaticResponse(operation)
-
-		time.AfterFunc(time.Second, func() {
-			os.Exit(0)
-		})
-
-	case onvif.MediaGetVideoSources:
-		b = onvif.GetVideoSourcesResponse(names, buildMetas(names))
-
-	case onvif.MediaGetProfiles:
-		// important for Hass: H264 codec, width, height
-		b = onvif.GetProfilesResponse(names, buildMetas(names))
-
-	case onvif.MediaGetProfile:
-		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
-		b = onvif.GetProfileResponse(target, buildMeta(target))
-
-	case onvif.MediaGetVideoSourceConfigurations:
-		// important for Happytime Onvif Client
-		b = onvif.GetVideoSourceConfigurationsResponse(names, buildMetas(names))
-
-	case onvif.MediaGetVideoSourceConfiguration:
-		b = onvif.GetVideoSourceConfigurationResponse(stream, meta)
-
-	case onvif.MediaGetVideoEncoderConfigurations:
-		b = onvif.GetVideoEncoderConfigurationsResponse(names, buildMetas(names))
-
-	case onvif.MediaGetVideoEncoderConfiguration:
-		b = onvif.GetVideoEncoderConfigurationResponse(meta)
-
-	case onvif.MediaGetAudioSources:
-		b = onvif.GetAudioSourcesResponse(names, buildMetas(names))
-
-	case onvif.MediaGetAudioSourceConfigurations:
-		b = onvif.GetAudioSourceConfigurationsResponse(names, buildMetas(names))
-
-	case onvif.MediaGetAudioEncoderConfigurations:
-		b = onvif.GetAudioEncoderConfigurationsResponse(names, buildMetas(names))
-
-	case onvif.MediaGetAudioEncoderConfiguration:
-		b = onvif.GetAudioEncoderConfigurationResponse(meta)
-
-	case onvif.MediaGetStreamUri:
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = r.Host // in case of Host without port
-		}
-		target := profileStream(onvif.FindTagValue(b, "ProfileToken"), stream)
-		b = onvif.GetStreamUriResponse("rtsp://" + host + ":" + rtsp.Port + "/" + target)
-
-	case onvif.MediaGetSnapshotUri:
-		// r.Host is the main API host:port, so snapshot URL is already correct.
-		// Snapshots are only available for the main stream.
-		uri := "http://" + r.Host + "/api/frame.jpeg?src=" + stream
-		b = onvif.GetSnapshotUriResponse(uri)
-
-	default:
+	out := buildOnvifResponse(operation, r, stream, snapshotURI)
+	if out == nil {
 		http.Error(w, "unsupported operation", http.StatusBadRequest)
 		log.Warn().Msgf("[onvif] unsupported operation: %s", operation)
 		log.Debug().Msgf("[onvif] unsupported request:\n%s", b)
 		return
 	}
 
-	log.Trace().Msgf("[onvif] server response:\n%s", b)
-
+	log.Trace().Msgf("[onvif] server response:\n%s", out)
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
-	if _, err = w.Write(b); err != nil {
+	if _, err = w.Write(out); err != nil {
 		log.Error().Err(err).Caller().Send()
 	}
 }
