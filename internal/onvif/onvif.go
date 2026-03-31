@@ -34,17 +34,23 @@ import (
 //	      fps: 30
 //	      bitrate: 4096             # kbps
 //	      ip: "192.168.1.100"       # unique IP → go2rtc auto-creates a macvlan NIC (Linux/Docker)
+//	      audio_codec: "AAC"        # "AAC" or "G711"; overrides live-detected codec name
+//	      audio_sample_rate: 16000  # Hz; overrides live-detected sample rate
+//	      audio_channels: 1         # channel count; overrides live-detected channels
 //
 // Devices with ip: set are advertised via WS-Discovery as independent ONVIF cameras,
 // each with a unique MAC address derived from the stream name.
 // Devices without ip: are accessible at /onvif/{stream}/ on the main API port but are
 // not advertised via WS-Discovery.
 type streamOverride struct {
-	Model      string `yaml:"model"`
-	Resolution string `yaml:"resolution"`
-	FPS        int    `yaml:"fps"`
-	Bitrate    int    `yaml:"bitrate"`
-	IP         string `yaml:"ip"`
+	Model           string `yaml:"model"`
+	Resolution      string `yaml:"resolution"`
+	FPS             int    `yaml:"fps"`
+	Bitrate         int    `yaml:"bitrate"`
+	AudioCodec      string `yaml:"audio_codec"`       // "AAC" or "G711"; overrides live-detected codec
+	AudioSampleRate int    `yaml:"audio_sample_rate"` // Hz; overrides live-detected sample rate
+	AudioChannels   int    `yaml:"audio_channels"`    // channel count; overrides live-detected channels
+	IP              string `yaml:"ip"`
 }
 
 var streamOverrides map[string]streamOverride
@@ -254,6 +260,15 @@ func buildMeta(name string) *onvif.StreamMeta {
 		}
 		if ov.Model != "" {
 			meta.Model = ov.Model
+		}
+		if ov.AudioCodec != "" {
+			meta.Audio = ov.AudioCodec
+		}
+		if ov.AudioSampleRate > 0 {
+			meta.AudioSampleRate = ov.AudioSampleRate
+		}
+		if ov.AudioChannels > 0 {
+			meta.AudioChannels = ov.AudioChannels
 		}
 	}
 
