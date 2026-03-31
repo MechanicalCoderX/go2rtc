@@ -184,6 +184,20 @@ func GetServicesResponse(host, stream string) []byte {
 	return e.Bytes()
 }
 
+func GetNetworkInterfacesResponse(mac string) []byte {
+	e := NewEnvelope()
+	e.Appendf(`<tds:GetNetworkInterfacesResponse>
+	<tds:NetworkInterfaces token="eth0">
+		<tt:Enabled>true</tt:Enabled>
+		<tt:Info>
+			<tt:Name>eth0</tt:Name>
+			<tt:HwAddress>%s</tt:HwAddress>
+		</tt:Info>
+	</tds:NetworkInterfaces>
+</tds:GetNetworkInterfacesResponse>`, mac)
+	return e.Bytes()
+}
+
 func GetSystemDateAndTimeResponse() []byte {
 	loc := time.Now()
 	utc := loc.UTC()
@@ -461,8 +475,8 @@ var responses = map[string]string{
 	DeviceSetSystemDateAndTime:     `<tds:SetSystemDateAndTimeResponse />`,
 	DeviceSystemReboot:             `<tds:SystemRebootResponse><tds:Message>OK</tds:Message></tds:SystemRebootResponse>`,
 
-	DeviceGetNetworkInterfaces: `<tds:GetNetworkInterfacesResponse />`,
-	DeviceGetNetworkProtocols:  `<tds:GetNetworkProtocolsResponse />`,
+	// DeviceGetNetworkInterfaces is handled dynamically (per-stream MAC address).
+	DeviceGetNetworkProtocols: `<tds:GetNetworkProtocolsResponse />`,
 
 	MediaGetVideoEncoderConfigurationOptions: `<trt:GetVideoEncoderConfigurationOptionsResponse>
    <trt:Options>

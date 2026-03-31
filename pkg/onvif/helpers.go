@@ -41,6 +41,27 @@ func StreamSerial(name string) string {
 	return fmt.Sprintf("%016x", b[16:24])
 }
 
+// StreamUUID returns a deterministic UUID derived from a stream name.
+// The same name always produces the same UUID across restarts, giving
+// each stream a stable ONVIF endpoint identity.
+func StreamUUID(name string) string {
+	b := sha512.Sum512([]byte(name))
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// StreamMAC returns a deterministic locally-administered MAC address for a stream.
+// The locally-administered bit (0x02) is set in the first octet so it cannot
+// collide with real hardware MACs. NVRs (including UniFi Protect) use the MAC
+// from GetNetworkInterfaces as the primary unique camera identifier.
+func StreamMAC(name string) string {
+	b := sha512.Sum512([]byte(name))
+	// Set locally-administered bit, clear multicast bit.
+	mac0 := (b[24] | 0x02) &^ 0x01
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
+		mac0, b[25], b[26], b[27], b[28], b[29])
+}
+
 // DiscoveryStreamingDevices return list of tuple (onvif_url, name, hardware)
 func DiscoveryStreamingDevices() ([]DiscoveryDevice, error) {
 	conn, err := net.ListenUDP("udp4", nil)
