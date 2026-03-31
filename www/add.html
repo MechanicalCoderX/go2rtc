@@ -203,26 +203,244 @@
         <form id="nest-form">
             <input type="text" name="client_id" placeholder="client_id" required>
             <input type="text" name="client_secret" placeholder="client_secret" required>
-            <input type="text" name="refresh_token" placeholder="refresh_token" required>
             <input type="text" name="project_id" placeholder="project_id" required>
-            <button type="submit">login</button>
+            <input type="text" name="redirect_uri" id="nest-redirect-uri" size="50"
+                   title="Must be registered as an Authorized redirect URI in Google Cloud Console">
+            <small>
+                Register the URL above in your <strong>Web application</strong> OAuth client &rarr;
+                <a id="nest-console-link" href="https://console.cloud.google.com/apis/credentials"
+                   target="_blank" rel="noopener noreferrer">Google Cloud Console &#8599;</a><br>
+                <em>GCP accepts <code>http://127.0.0.1</code> loopback URIs for Web app clients — register it once and it works for any setup.</em>
+            </small>
+            <button type="submit">Login with Google</button>
         </form>
+        <div id="nest-paste-section" style="display:none">
+            <div style="background:#fff3cd;border:1px solid #e6ac00;border-radius:4px;padding:8px 12px;font-size:0.9em">
+                ⚠️ <strong>If the popup shows "page cannot be displayed"</strong> — copy the full
+                URL from the popup's address bar <strong>before closing the popup</strong>, paste
+                it below, then click Submit.<br>
+                <small style="color:#666">This only happens when your browser and go2rtc are on
+                different machines. If you're on the same machine, this panel will disappear
+                automatically once login completes.</small>
+            </div>
+            <input type="text" id="nest-paste-url"
+                   placeholder="Paste full redirect URL (http://127.0.0.1:…?code=…&state=…)" size="60">
+            <button type="button" id="nest-paste-submit">Submit code</button>
+        </div>
+        <input type="hidden" id="nest-state">
         <table id="nest-table"></table>
     </div>
     <script>
+        function nestUpdateConsoleLink() {
+            const clientId = document.querySelector('#nest-form [name="client_id"]').value.trim();
+            const link = document.getElementById('nest-console-link');
+            const projectNum = clientId.split('-')[0];
+            // client_id starts with the numeric GCP project number; use it to deep-link.
+            if (/^\d+$/.test(projectNum)) {
+                link.href = 'https://console.cloud.google.com/apis/credentials?project=' + projectNum;
+            } else {
+                link.href = 'https://console.cloud.google.com/apis/credentials';
+            }
+        }
+
         document.getElementById('nest').addEventListener('click', async ev => {
             ev.target.nextElementSibling.style.display = 'grid';
+            const field = document.getElementById('nest-redirect-uri');
+            if (!field.value) {
+                // Use 127.0.0.1 loopback — GCP accepts this for Web app clients unlike
+                // private IPs (10.x, 192.168.x). go2rtc listens on 0.0.0.0 so it handles
+                // the callback when browser and server are on the same machine. When remote,
+                // the paste fallback below catches the code from the address bar.
+                const portSuffix = location.port ? ':' + location.port : '';
+                field.value = 'http://127.0.0.1' + portSuffix + '/api/nest/callback';
+            }
+            nestUpdateConsoleLink();
+        });
+
+        document.querySelector('#nest-form [name="client_id"]').addEventListener('input', nestUpdateConsoleLink);
+
+        // Renders Nest device results with an editable name and ADD button per row.
+        function drawNestTable(table, data) {
+            table.innerHTML = '<thead><tr><th></th><th>name</th><th>url</th></tr></thead><tbody></tbody>';
+            const tbody = table.querySelector('tbody');
+            data.sources.forEach(s => {
+                const tr = document.createElement('tr');
+
+                const addTd = document.createElement('td');
+                const addBtn = document.createElement('button');
+                addBtn.type = 'button';
+                addBtn.textContent = 'ADD';
+                addBtn.style.cssText = 'padding:2px 8px;cursor:pointer';
+                addTd.appendChild(addBtn);
+                tr.appendChild(addTd);
+
+                const nameTd = document.createElement('td');
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.value = s.name || '';
+                nameInput.style.width = '180px';
+                nameTd.appendChild(nameInput);
+                tr.appendChild(nameTd);
+
+                const urlTd = document.createElement('td');
+                urlTd.style.cssText = 'word-break:break-word;white-space:normal;font-size:0.85em';
+                urlTd.textContent = s.url;
+                tr.appendChild(urlTd);
+
+                addBtn.addEventListener('click', async () => {
+                    const name = nameInput.value.trim().toLowerCase().replace(/\s+/g, '_');
+                    if (!name) { addBtn.textContent = 'Name?'; return; }
+                    nameInput.value = name;
+                    const u = new URL('api/streams', location.href);
+                    u.searchParams.set('name', name);
+                    u.searchParams.set('src', s.url);
+                    const r = await fetch(u, {method: 'PUT', cache: 'no-cache'});
+                    if (r.ok) {
+                        addBtn.textContent = '✓ Added';
+                        addBtn.disabled = true;
+                    } else {
+                        addBtn.textContent = 'Error';
+                        console.error(await r.text());
+                    }
+                });
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        function nestPollState(state) {
+            const table       = document.getElementById('nest-table');
+            const pasteSection = document.getElementById('nest-paste-section');
+            const poll = setInterval(async () => {
+                const sr = await fetch(
+                    new URL('api/nest/status?state=' + state, location.href),
+                    {cache: 'no-cache'}
+                );
+                if (sr.status === 204) return;
+                clearInterval(poll);
+                pasteSection.style.display = 'none';
+                if (!sr.ok) {
+                    table.innerText = await sr.text();
+                } else {
+                    drawNestTable(table, await sr.json());
+                }
+            }, 500);
+            return poll;
+        }
+
+        document.getElementById('nest-paste-submit').addEventListener('click', async () => {
+            const table     = document.getElementById('nest-table');
+            const pastedUrl = document.getElementById('nest-paste-url').value.trim();
+            let code, state;
+            try {
+                const u = new URL(pastedUrl);
+                code  = u.searchParams.get('code');
+                state = u.searchParams.get('state') || document.getElementById('nest-state').value;
+            } catch (e) {
+                table.innerText = 'Invalid URL — paste the full address bar URL.';
+                return;
+            }
+            if (!code || !state) {
+                table.innerText = 'URL is missing a code or state — paste the full address bar URL.';
+                return;
+            }
+            table.innerText = 'Processing…';
+
+            // If go2rtc and the browser are on the same machine, the popup's redirect
+            // to 127.0.0.1 may have already been processed — check for results first
+            // before trying to re-exchange the code (codes are single-use).
+            const preCheck = await fetch(
+                new URL('api/nest/status?state=' + state, location.href),
+                {cache: 'no-cache'}
+            );
+            if (preCheck.status === 200) {
+                drawNestTable(table, await preCheck.json());
+                return;
+            }
+
+            // No results yet — ask the server to exchange the pasted code.
+            let resp;
+            try {
+                const cb = new URL('api/nest/callback', location.href);
+                cb.searchParams.set('code', code);
+                cb.searchParams.set('state', state);
+                resp = await fetch(cb, {cache: 'no-cache'});
+            } catch (e) {
+                table.innerText = 'Network error: ' + e.message;
+                return;
+            }
+
+            const body = await resp.text();
+            if (!body.includes('Login successful')) {
+                const m = body.match(/<p>([^<]+)<\/p>/);
+                table.innerText = m ? m[1] : 'Server error — check go2rtc logs.';
+                return;
+            }
+
+            const poll = nestPollState(state);
+            setTimeout(() => {
+                clearInterval(poll);
+                if (table.innerText === 'Processing…') {
+                    table.innerText = 'No response — the code may have expired. Please try again.';
+                }
+            }, 15000);
         });
 
         document.getElementById('nest-form').addEventListener('submit', async ev => {
             ev.preventDefault();
 
+            const table       = document.getElementById('nest-table');
+            const pasteSection = document.getElementById('nest-paste-section');
+            pasteSection.style.display = 'none';
+
             const query = new URLSearchParams(new FormData(ev.target));
-            const url = new URL('api/nest?' + query.toString(), location.href);
+            const url   = new URL('api/nest?' + query.toString(), location.href);
+
+            table.innerText = 'loading...';
 
             const r = await fetch(url, {cache: 'no-cache'});
-            await getSources('nest-table', r);
+            if (!r.ok) {
+                table.innerText = await r.text();
+                return;
+            }
+
+            const data = await r.json();
+
+            // OAuth2 flow: server returned an authorize_url — open a popup and poll.
+            if (data.authorize_url) {
+                document.getElementById('nest-state').value = data.state;
+
+                const popup = window.open(data.authorize_url, 'nest_auth', 'width=520,height=640');
+                table.innerText = 'Waiting for Google login…';
+
+                // Show the paste panel immediately so the warning is visible before
+                // the user has a chance to close the popup on seeing a connection error.
+                // nestPollState hides it automatically once results arrive (same-machine).
+                pasteSection.style.display = '';
+
+                const poll = nestPollState(data.state);
+
+                // Watch for popup close.
+                // If go2rtc handled the callback directly (local machine), nestPollState
+                // will have already hidden the paste panel and updated the table.
+                // If the popup was closed before the URL was copied, update the prompt.
+                const guard = setInterval(() => {
+                    if (popup && popup.closed) {
+                        clearInterval(guard);
+                        clearInterval(poll);
+                        if (table.innerText === 'Waiting for Google login…') {
+                            table.innerText = 'If you authenticated, paste the redirect URL above. Otherwise try again.';
+                        }
+                    }
+                }, 500);
+
+                return;
+            }
+
+            // Direct sources response (refresh_token path).
+            drawNestTable(table, data);
         });
+
     </script>
 
     <button id="gopro">GoPro</button>
