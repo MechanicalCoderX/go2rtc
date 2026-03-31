@@ -1,0 +1,13 @@
+services:
+  go2rtc:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    network_mode: host       # required: WebRTC ICE, WS-Discovery multicast, and macvlan NIC visibility
+    cap_add:
+      - NET_ADMIN            # required: create/delete per-stream macvlan virtual NICs
+    restart: unless-stopped
+    environment:
+      - TZ=America/New_York  # adjust to your timezone
+    volumes:
+      - ./config:/config     # place your go2rtc.yaml in ./config/go2rtc.yaml
