@@ -1,6 +1,7 @@
 package onvif
 
 import (
+	"crypto/sha512"
 	"fmt"
 	"net"
 	"net/url"
@@ -31,6 +32,13 @@ func FindTagValue(b []byte, tag string) string {
 func UUID() string {
 	s := core.RandString(32, 16)
 	return s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
+}
+
+// StreamSerial returns a short deterministic hex serial number for a stream,
+// used as the ONVIF SerialNumber in GetDeviceInformation responses.
+func StreamSerial(name string) string {
+	b := sha512.Sum512([]byte(name))
+	return fmt.Sprintf("%016x", b[16:24])
 }
 
 // DiscoveryStreamingDevices return list of tuple (onvif_url, name, hardware)
