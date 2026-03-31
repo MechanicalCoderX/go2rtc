@@ -94,6 +94,22 @@ func (s *Stream) RemoveProducer(prod core.Producer) {
 	s.mu.Unlock()
 }
 
+// GetMedias returns the medias of the first connected producer, or nil if no
+// producer is currently active. Used by the ONVIF server to read live codec info.
+func (s *Stream) GetMedias() []*core.Media {
+	s.mu.Lock()
+	prods := make([]*Producer, len(s.producers))
+	copy(prods, s.producers)
+	s.mu.Unlock()
+
+	for _, prod := range prods {
+		if medias := prod.GetMedias(); medias != nil {
+			return medias
+		}
+	}
+	return nil
+}
+
 func (s *Stream) stopProducers() {
 	if s.pending.Load() > 0 {
 		log.Trace().Msg("[streams] skip stop pending producer")
